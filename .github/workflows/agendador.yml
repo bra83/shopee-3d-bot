@@ -1,0 +1,27 @@
+name: Robo Pesquisador 3D
+
+# Aqui dizemos QUANDO o robô deve trabalhar
+on:
+  schedule:
+    - cron: '0 0 * * *' # Isso faz ele rodar todo dia à meia-noite (horário UTC)
+  workflow_dispatch:    # Isso cria um botão para você mandar ele rodar AGORA se quiser
+
+jobs:
+  coleta_dados:
+    runs-on: ubuntu-latest # O GitHub vai emprestar um computador com Linux para nós
+    
+    steps:
+      - name: 1. Pegando os arquivos do projeto
+        uses: actions/checkout@v4
+
+      - name: 2. Preparando o Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 3. Instalando as ferramentas (DrissionPage e Requests)
+        run: |
+          pip install DrissionPage requests
+
+      - name: 4. Executando o script da Shopee
+        run: python bot_shopee.py
