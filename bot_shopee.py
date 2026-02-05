@@ -1,37 +1,46 @@
 from DrissionPage import ChromiumPage, ChromiumOptions
 import requests
-import json
+import time
 
 def coletar_shopee():
-    # Configura o navegador para ser 'invisível'
-    co = ChromiumOptions().set_argument('--headless').set_argument('--no-sandbox')
+    # Configuração para rodar no servidor do GitHub (sem interface visual)
+    co = ChromiumOptions().set_argument('--headless').set_argument('--no-sandbox').set_argument('--disable-gpu')
     page = ChromiumPage(co)
     
-    # Busca por produtos 3D (Impressoras, Filamentos, etc)
-    termo = "impressora 3d filamento"
-    url = f'https://shopee.com.br/search?keyword={termo}&sortBy=sales'
+    # URL do seu Google Apps Script
+    webhook_url = "https://script.google.com/macros/s/AKfycbwLnBKOkxp8T5fgQ8DZkAOZZtMxf3BvXEyd-LdRwEPpxHxhNhBNVgDIEjhCfUnXUS0G/exec"
     
-    page.get(url)
-    page.wait(5) # Espera a página carregar
+    # Termos de busca focados no seu negócio (Bambu Lab e Resina)
+    termos = ["impressão 3d articulado", "decoracao 3d", "3d culinaria", "suporte 3d"]
     
-    produtos = []
-    # O robô olha os itens na tela
-    itens = page.eles('.shopee-search-item-result__item')
+    todos_produtos = []
+
+    for termo in termos:
+        print(f"Pesquisando: {termo}")
+        url = f'https://shopee.com.br/search?keyword={termo}&sortBy=sales'
+        page.get(url)
+        time.sleep(5) # Espera carregar os produtos
+        
+        # O robô captura os itens da vitrine
+        itens = page.eles('.shopee-search-item-result__item')
+        
+        for item in itens[:10]: # Pega os 10 mais vendidos de cada termo
+            try:
+                dados = {
+                    "nome": item.ele('.vvp_n').text,
+                    "preco": item.ele('.vvp_p').text.replace('R$', '').strip(),
+                    "vendas_mensais": item.ele('.vvp_s').text,
+                    "categoria": termo
+                }
+                todos_produtos.append(dados)
+            except:
+                continue # Pula se houver erro em algum item específico
+
+    # Envia o relatório final para a sua planilha
+    if todos_produtos:
+        response = requests.post(webhook_url, json=todos_produtos)
+        print(f"Relatório enviado! Status: {response.status_code}")
     
-    for item in itens[:20]: # Pega os 20 mais vendidos
-        dados = {
-            "nome": item.ele('.vvp_n').text if item.ele('.vvp_n') else "Sem nome",
-            "preco": item.ele('.vvp_p').text if item.ele('.vvp_p') else "0",
-            "vendas_mensais": item.ele('.vvp_s').text if item.ele('.vvp_s') else "0",
-            "categoria": "3D Printing"
-        }
-        produtos.append(dados)
-    
-    # Envia o presente para o seu n8n
-    webhook_url = "SUA_URL_DO_WEBHOOK_AQUI"
-    requests.post(webhook_url, json=produtos)
-    
-    print(f"Enviado {len(produtos)} produtos para o n8n!")
     page.quit()
 
 if __name__ == "__main__":
