@@ -3,55 +3,55 @@ import requests
 import time
 
 def coletar_shopee():
-    # Configuração para rodar de forma invisível no GitHub
     co = ChromiumOptions().set_argument('--headless').set_argument('--no-sandbox').set_argument('--disable-gpu')
     page = ChromiumPage(co)
     
-    # Seu endereço de entrega (Apps Script)
     webhook_url = "https://script.google.com/macros/s/AKfycbwDmkCFReAWkUFyLLj8I2Hj0TtCCFnCKvx7OCmMX79j3AQIIPEF8kbA7wHqvIYj5uk6/exec"
-    
-    # Seus termos de busca para o negócio 3D
     termos = ["impressão 3d articulado", "decoracao 3d", "3d culinaria", "suporte 3d"]
     
     todos_produtos = []
 
     for termo in termos:
-        print(f"Buscando por: {termo}...")
+        print(f"--- Iniciando busca: {termo} ---")
         url = f'https://shopee.com.br/search?keyword={termo}&sortBy=sales'
         page.get(url)
-        time.sleep(6) # Tempo de segurança para carregar a página
         
-        # Localiza os itens na página
-        itens = page.eles('.shopee-search-item-result__item')
+        # Rola a página para baixo para carregar os produtos (Lazy Load)
+        page.scroll.to_bottom()
+        time.sleep(5) 
         
-        for item in itens[:10]: # Top 10 de cada categoria
+        # Tenta encontrar os produtos por um seletor mais genérico (data-sqe)
+        itens = page.eles('xpath://div[@data-sqe="item"]')
+        print(f"Encontrados {len(itens)} elementos para {termo}")
+        
+        for item in itens[:10]:
             try:
-                # Captura e limpa o preço para formato numérico
-                preco_raw = item.ele('.vvp_p').text
-                preco_limpo = preco_raw.replace('R$', '').replace('.', '').replace(',', '.').strip()
-
-                # Captura o link do produto
+                # Busca o nome e preço dentro do item
+                nome = item.ele('.vvp_n').text if item.ele('.vvp_n') else "Nome não encontrado"
+                # Limpeza do preço
+                preco_elem = item.ele('.vvp_p')
+                preco = preco_elem.text.replace('R$', '').replace('.', '').replace(',', '.').strip() if preco_elem else "0"
+                
                 link = item.attr('href')
                 link_completo = link if link.startswith('http') else 'https://shopee.com.br' + link
 
-                dados = {
-                    "nome": item.ele('.vvp_n').text,
-                    "preco": preco_limpo,
-                    "vendas_mensais": item.ele('.vvp_s').text,
+                todos_produtos.append({
+                    "nome": nome,
+                    "preco": preco,
+                    "vendas_mensais": "Consultar", # Campo simplificado
                     "categoria": termo,
                     "link": link_completo
-                }
-                todos_produtos.append(dados)
+                })
             except Exception as e:
+                print(f"Erro ao processar item: {e}")
                 continue
 
-    # Envia os dados para a sua planilha
     if todos_produtos:
-        try:
-            res = requests.post(webhook_url, json=todos_produtos)
-            print(f"Sucesso! {len(todos_produtos)} itens enviados. Status: {res.status_code}")
-        except Exception as e:
-            print(f"Erro ao enviar: {e}")
+        print(f"Enviando {len(todos_produtos)} produtos para a planilha...")
+        res = requests.post(webhook_url, json=todos_produtos)
+        print(f"Resposta do Google: {res.text}")
+    else:
+        print("ALERTA: Nenhum produto foi capturado. Verifique o site.")
     
     page.quit()
 
