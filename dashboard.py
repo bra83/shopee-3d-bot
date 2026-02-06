@@ -9,7 +9,7 @@ from sklearn.cluster import KMeans
 from collections import Counter
 
 st.set_page_config(page_title="BCRUZ | ORACLE 3D", layout="wide")
-URL_API = "https://script.google.com/macros/s/AKfycbx9ksJ2KMhPwyRaymUoYvAXR2Kvr_bcCUyZT-ICHNF0OwkgxVWm9HPqwQMo24LKz2gn/exec"
+URL_API = "https://script.google.com/macros/s/AKfycbwkKrs1dElzz3CcPOBfsv8XaxZNir3XCwuK_Nh8kssY1VAc4WPFLheukwHddrO6nOP2/exec"
 INVESTIMENTO = 4200.0
 
 st.markdown("<style>.stApp { background-color: #000; color: #0f0; }</style>", unsafe_allow_html=True)
