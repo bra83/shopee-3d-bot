@@ -5,3 +5,4 @@ scikit-learn
 wordcloud
 matplotlib
 numpy
+nltk
