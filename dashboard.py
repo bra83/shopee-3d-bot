@@ -29,7 +29,7 @@ st.markdown("""
 
 # --- 2. CARREGAMENTO E DATA SCIENCE ---
 # ⚠️⚠️ COLOQUE SEU LINK CSV PUBLICO AQUI ⚠️⚠️
-SHEET_CSV_URL = "https://script.google.com/macros/s/AKfycbw2MksECV2wTgCnJOxIQyZCKIz7pn1tyzjq1z7pQ6Bw2xdpw7SkfCUH81xHvwbjF6q8/exec"
+SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRtLCFvhbktUToSC6XCCtsEk-Fats-FqW8Nv_fG9AG_8fWfu7pMIFq7Zo0m0oS37r0coiqQyn9ZWc0F/pub?output=csv"
 
 @st.cache_data(ttl=300)
 def load_data():
