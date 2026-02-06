@@ -1,76 +1,98 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
-import requests, re, numpy as np
-from wordcloud import WordCloud
-import matplotlib.pyplot as plt
-from sklearn.cluster import KMeans
-from collections import Counter
 
-st.set_page_config(page_title="BCRUZ | ORACLE 3D", layout="wide")
-URL_API = "https://script.google.com/macros/s/AKfycbzz1kNMVd7wDkem6Vrdb1v1sUyWyekpUWe8Dd-dI4VxgLqpFhJe9DmE6486apJ97dy6/exec"
-INVESTIMENTO = 4200.0
+# --- CONFIGURAÇÃO ---
+st.set_page_config(page_title="BCRUZ Intelligence 3D", layout="wide", page_icon="🖨️")
 
-st.markdown("<style>.stApp { background-color: #000; color: #0f0; }</style>", unsafe_allow_html=True)
-
-def clean_val(v):
-    if not v: return 0.0
-    res = re.findall(r"[-+]?\d*\.\d+|\d+", str(v).replace('.','').replace(',','.'))
-    return float(res[0]) if res else 0.0
+# COLE O LINK DE EXPORTAÇÃO CSV DA SUA PLANILHA AQUI
+# (Arquivo > Compartilhar > Publicar na Web > CSV)
+SHEET_CSV_URL = "https://script.google.com/macros/s/AKfycbzz1kNMVd7wDkem6Vrdb1v1sUyWyekpUWe8Dd-dI4VxgLqpFhJe9DmE6486apJ97dy6/exec"
 
 @st.cache_data(ttl=60)
-def load():
+def carregar_dados():
     try:
-        r = requests.get(URL_API, timeout=30)
-        df = pd.DataFrame(r.json())
-        df['Preco_N'] = df['Preço'].apply(clean_val)
-        df['Vendas_N'] = df['Vendas'].apply(clean_val)
-        df['Score'] = (df['Preco_N'] * 0.7) + (df['Vendas_N'] * 0.3)
+        # Lê a planilha assumindo o cabeçalho novo
+        df = pd.read_csv(SHEET_CSV_URL)
+        
+        # Limpeza de Preço (R$ 1.200,50 -> 1200.50)
+        col_preco = 'PREÇO (R$)' # Nome exato que colocamos no Apps Script
+        if col_preco in df.columns:
+            df[col_preco] = df[col_preco].astype(str).str.replace('R$', '', regex=False)
+            df[col_preco] = df[col_preco].str.replace('.', '', regex=False).str.replace(',', '.')
+            df[col_preco] = pd.to_numeric(df[col_preco], errors='coerce').fillna(0)
+        
+        # Tratamento de Prazo (Coluna H)
+        col_prazo = 'PRAZO DE PRODUÇÃO'
+        if col_prazo in df.columns:
+            df[col_prazo] = df[col_prazo].fillna("PADRÃO")
+            # Cria flag de oportunidade
+            df['OPORTUNIDADE'] = df[col_prazo].apply(
+                lambda x: "🚨 ATAQUE (Lento)" if "DIAS" in str(x).upper() and int(re.search(r'\d+', str(x)).group(0) if re.search(r'\d+', str(x)) else 0) > 5 
+                else ("⚡ CONCORRENTE (Rápido)" if "IMEDIATO" in str(x).upper() else "Normal")
+            )
+            
         return df
-    except: return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Erro ao carregar dados: {e}")
+        return pd.DataFrame()
 
-df = load()
+# --- INTERFACE ---
+st.title("🖨️ BCRUZ 3D - Central de Comando")
+st.markdown("Análise de mercado para viabilidade da **Bambu Lab A1**.")
+
+df = carregar_dados()
 
 if not df.empty:
-    st.title("🏹 BCRUZ COMMAND: ESTRATÉGIA DE ALTA MARGEM")
-    t1, t2, t3, t4 = st.tabs(["💰 PAYBACK", "📡 RADAR SNIPER", "✍️ SEO MASTER", "⚙️ FILA PPH"])
+    # Sidebar de Filtros
+    st.sidebar.header("Filtros Estratégicos")
+    categorias = st.sidebar.multiselect("Categoria", df['CATEGORIA'].unique())
+    filtro_prazo = st.sidebar.radio("Logística", ["Todos", "Apenas Lentos (>5 dias)", "Pronta Entrega"])
 
-    with t1:
-        c1, c2 = st.columns([1,2])
-        ja_ganho = c1.number_input("Lucro Total (R$)", value=0.0)
-        meta_dia = c1.number_input("Meta Diária (R$)", value=50.0)
-        restante = INVESTIMENTO - ja_ganho
-        c1.metric("Falta", f"R$ {restante:.2f}")
-        c1.info(f"Payback em: {int(restante/meta_dia) if meta_dia > 0 else 0} dias")
-        fig_g = go.Figure(go.Indicator(mode="gauge+number", value=ja_ganho, gauge={'axis':{'range':[None,INVESTIMENTO]}, 'bar':{'color':"#0f0"}}))
-        st.plotly_chart(fig_g)
+    # Aplica filtros
+    df_filtered = df.copy()
+    if categorias:
+        df_filtered = df_filtered[df_filtered['CATEGORIA'].isin(categorias)]
+    
+    if filtro_prazo == "Apenas Lentos (>5 dias)":
+        df_filtered = df_filtered[df_filtered['OPORTUNIDADE'] == "🚨 ATAQUE (Lento)"]
+    elif filtro_prazo == "Pronta Entrega":
+        df_filtered = df_filtered[df_filtered['OPORTUNIDADE'] == "⚡ CONCORRENTE (Rápido)"]
 
-    with t2:
-        X = df[['Preco_N', 'Vendas_N']]
-        km = KMeans(n_clusters=min(3, len(df)), n_init=10).fit(X)
-        df['Perfil'] = km.labels_
-        df['Status'] = df['Perfil'].map({0:"Saturado", 1:"Oportunidade", 2:"ELITE"})
-        fig = px.scatter(df, x="Preco_N", y="Vendas_N", color="Status", size="Score", hover_name="Produto", template="plotly_dark", color_discrete_sequence=px.colors.qualitative.Vivid)
-        st.plotly_chart(fig, use_container_width=True)
+    # KPIs
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Produtos Analisados", len(df_filtered))
+    c2.metric("Preço Médio", f"R$ {df_filtered['PREÇO (R$)'].mean():.2f}")
+    
+    # Conta quantos são 'Lentos' (Oportunidade de Pronta Entrega)
+    oportunidades = len(df_filtered[df_filtered['OPORTUNIDADE'] == "🚨 ATAQUE (Lento)"])
+    c3.metric("Oportunidades de Ataque", oportunidades, help="Produtos que demoram mais de 5 dias para produzir")
 
-    with t3:
-        text = " ".join(df[df['Vendas_N']>0]['Produto']).lower()
-        sw = ['para','com','kit','3d','shopee','elo7','envio']
-        wc = WordCloud(width=800, height=400, background_color="black", colormap="Greens", stopwords=sw).generate(text)
-        fig_wc, ax = plt.subplots(); ax.imshow(wc); ax.axis("off"); st.pyplot(fig_wc)
-        # Sugestão SEO
-        comuns = Counter([w for w in re.findall(r'\w+', text) if len(w)>3 and w not in sw]).most_common(5)
-        st.success(f"Sugestão SEO: {' '.join([k[0].upper() for k in comuns])} - QUALIDADE PREMIUM")
+    # Gráficos
+    st.markdown("---")
+    
+    col_g1, col_g2 = st.columns(2)
+    
+    with col_g1:
+        st.subheader("💰 Faixa de Preço por Prazo")
+        fig_price = px.box(df_filtered, x="PRAZO DE PRODUÇÃO", y="PREÇO (R$)", points="all", color="OPORTUNIDADE")
+        st.plotly_chart(fig_price, use_container_width=True)
+        
+    with col_g2:
+        st.subheader("📊 Distribuição de Prazos")
+        fig_pie = px.pie(df_filtered, names="PRAZO DE PRODUÇÃO", title="Market Share Logístico")
+        st.plotly_chart(fig_pie, use_container_width=True)
 
-    with t4:
-        st.subheader("Simulador de Lucro por Hora ($PPH$)")
-        col_p1, col_p2 = st.columns(2)
-        tempo = col_p1.number_input("Tempo de Impressão (Horas)", value=2.0)
-        venda = col_p1.number_input("Preço de Venda (R$)", value=80.0)
-        peso = col_p1.number_input("Peso (Gramas)", value=100)
-        lucro = venda - (venda*0.18) - ((peso/1000)*95) - (tempo*0.6)
-        col_p2.metric("Lucro Líquido", f"R$ {lucro:.2f}")
-        col_p2.metric("PPH (Renda/Hora)", f"R$ {lucro/tempo:.2f}")
+    # Tabela de Dados
+    st.subheader("📋 Relatório de Inteligência")
+    st.dataframe(
+        df_filtered[['DATA CAPTURA', 'PRODUTO', 'PREÇO (R$)', 'PRAZO DE PRODUÇÃO', 'OPORTUNIDADE', 'LINK']],
+        column_config={
+            "LINK": st.column_config.LinkColumn("Link Elo7"),
+            "PREÇO (R$)": st.column_config.NumberColumn(format="R$ %.2f")
+        },
+        hide_index=True
+    )
 
-    st.dataframe(df[['Status','Fonte','Produto','Preco_N','Vendas_N','Link']], use_container_width=True)
+else:
+    st.warning("Aguardando dados do Robô...")
