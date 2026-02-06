@@ -1,2 +1,8 @@
-DrissionPage
+streamlit
+pandas
+plotly
 requests
+scikit-learn
+wordcloud
+matplotlib
+numpy
