@@ -7,89 +7,100 @@ import re
 import numpy as np
 from wordcloud import WordCloud
 import matplotlib.pyplot as plt
+from sklearn.cluster import KMeans
 
-# --- ENGINE DE INTELIGÊNCIA ---
-st.set_page_config(page_title="BCRUZ COMMAND | ELITE 3D", layout="wide")
+# --- CONFIGURAÇÃO DE ELITE ---
+st.set_page_config(page_title="BCRUZ COMMAND | ORACLE 3D", layout="wide", page_icon="⚡")
 
+# URL ATUALIZADA PELO USUÁRIO
 URL_API = "https://script.google.com/macros/s/AKfycbx9ksJ2KMhPwyRaymUoYvAXR2Kvr_bcCUyZT-ICHNF0OwkgxVWm9HPqwQMo24LKz2gn/exec"
-META_INVESTIMENTO = 4200.00
+INVESTIMENTO_INICIAL = 4200.00
+
+# Estilização Neon-Dark (CORREÇÃO: unsafe_allow_html)
+st.markdown("""
+    <style>
+    .stApp { background-color: #000000; color: #00FF41; }
+    div[data-testid="stMetricValue"] { color: #00FF41; font-family: 'Courier New'; }
+    .stTabs [data-baseweb="tab-list"] { background-color: #000; border-bottom: 1px solid #0f0; }
+    </style>
+    """, unsafe_allow_html=True)
 
 def clean_val(v):
     if not v: return 0.0
     res = re.findall(r"[-+]?\d*\.\d+|\d+", str(v).replace('.', '').replace(',', '.'))
     return float(res[0]) if res else 0.0
 
-@st.cache_data(ttl=300)
-def get_data():
+@st.cache_data(ttl=60) # Cache de 1 minuto para agilizar o celular
+def load_and_analyze():
     try:
         res = requests.get(URL_API, timeout=30)
         df = pd.DataFrame(res.json())
-        df['Preco_N'] = df['Preço'].apply(clean_val)
-        df['Vendas_N'] = df['Vendas'].apply(clean_val)
+        if df.empty: return df
+        df['Preco_Num'] = df['Preço'].apply(clean_val)
+        df['Vendas_Num'] = df['Vendas'].apply(clean_val)
+        # ID Score: Prioriza alto preço e alto volume
+        df['ID_Score'] = (df['Preco_Num'] * df['Vendas_Num']) / (df['Produto'].str.len() + 1)
         return df
-    except: return pd.DataFrame()
+    except Exception as e:
+        return pd.DataFrame()
 
-# --- INTERFACE NEON ---
-st.markdown("<style>.stApp { background-color: #000; color: #0f0; }</style>", unsafe_allow_stdio=True)
-st.title("⚡ SISTEMA DE DOMINAÇÃO BCRUZ 3D")
-
-df = get_data()
+df = load_and_analyze()
 
 if not df.empty:
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 ARBITRAGEM", "✍️ SEO & GAP", "⚙️ FILA INTELIGENTE", "📈 ROI PREDITIVO"])
+    st.title("⚡ BCRUZ COMMAND CENTER")
+    
+    tab_roi, tab_radar, tab_seo = st.tabs(["💰 MOTOR DE ROI", "📡 RADAR DE OPORTUNIDADE", "✍️ SEO ALQUIMISTA"])
 
-    # --- TAB 1: ARBITRAGEM (SHOPEE VS ELO7) ---
-    with tab1:
-        st.subheader("Onde vender? (Diferencial de Margem)")
-        # Compara onde o preço é mais alto para a mesma categoria
-        fig_comp = px.box(df, x="Fonte", y="Preco_N", color="Fonte", points="all", template="plotly_dark")
-        st.plotly_chart(fig_comp, use_container_width=True)
+    with tab_roi:
+        st.subheader("Predição de Payback (Bambu A1)")
+        col_r1, col_r2 = st.columns([1, 2])
+        with col_r1:
+            lucro_total = st.number_input("Lucro Total Acumulado (R$)", value=0.0, step=50.0)
+            meta_dia = st.number_input("Meta de Lucro Diário (R$)", value=50.0, step=10.0)
+            faltam = INVESTIMENTO_INICIAL - lucro_total
+            dias = int(faltam / meta_dia) if meta_dia > 0 else 0
+            
+            st.metric("Faltam para Quitar", f"R$ {faltam:.2f}")
+            st.info(f"Faltam aproximadamente **{dias} dias** de operação.")
+        with col_r2:
+            fig_gauge = go.Figure(go.Indicator(
+                mode = "gauge+number", value = lucro_total,
+                domain = {'x': [0, 1], 'y': [0, 1]},
+                gauge = {'axis': {'range': [None, INVESTIMENTO_INICIAL]},
+                         'bar': {'color': "#00FF41"},
+                         'steps' : [{'range': [0, 2100], 'color': "#111"}]}))
+            st.plotly_chart(fig_gauge, use_container_width=True)
 
-    # --- TAB 2: SEO & GAP ---
-    with tab2:
-        st.subheader("Localizador de Vácuos de Mercado")
-        fonte_sel = st.selectbox("Escolha a Fonte para analisar SEO", df['Fonte'].unique())
-        texto = " ".join(df[df['Fonte']==fonte_sel]['Produto']).lower()
-        wc = WordCloud(width=1000, height=400, background_color="black", colormap="Greens").generate(texto)
-        fig_wc, ax = plt.subplots()
-        ax.imshow(wc); ax.axis("off")
-        st.pyplot(fig_wc)
-
-    # --- TAB 3: FILA DE IMPRESSÃO INTELIGENTE ---
-    with tab3:
-        st.subheader("Optimizador de Produção (A1 Fast-Track)")
-        st.write("Insira os dados técnicos do Bambu Studio para comparar rentabilidade:")
+    with tab_radar:
+        st.subheader("Clusters de Elite (K-Means)")
+        X = df[['Preco_Num', 'Vendas_Num']]
+        # Ajuste dinâmico de clusters baseado no volume de dados
+        n_clusters = min(3, len(df))
+        km = KMeans(n_clusters=n_clusters, n_init=10).fit(X)
+        df['Segmento'] = km.labels_
         
-        col1, col2, col3, col4 = st.columns(4)
-        prod_nome = col1.text_input("Nome do Produto", "Suporte Elite")
-        prod_tempo = col2.number_input("Tempo (Horas)", 1.0)
-        prod_peso = col3.number_input("Peso (Gramas)", 50)
-        prod_preco = col4.number_input("Preço Alvo (R$)", 80.0)
+        fig_scatter = px.scatter(df, x="Preco_Num", y="Vendas_Num", 
+                                 color=df['Segmento'].astype(str), 
+                                 size="ID_Score", hover_name="Produto", 
+                                 template="plotly_dark", color_discrete_sequence=px.colors.qualitative.Neon)
+        st.plotly_chart(fig_scatter, use_container_width=True)
 
-        custo_filamento = (prod_peso / 1000) * 95.0 # R$ 95/kg
-        lucro_liquo = prod_preco - custo_filamento - (prod_preco * 0.18) # Taxas
-        pph = lucro_liquo / prod_tempo
+    with tab_seo:
+        st.subheader("SEO Inteligente: Palavras que Vendem")
+        top_vendas = df[df['Vendas_Num'] >= df['Vendas_Num'].median()]
+        if not top_vendas.empty:
+            text = " ".join(top_vendas['Produto']).lower()
+            stopwords = ['com', 'para', 'kit', 'envio', '3d', 'promoção', 'shopee', 'elo7', 'de', 'do', 'da']
+            wc = WordCloud(width=800, height=400, background_color="black", colormap="Greens", stopwords=stopwords).generate(text)
+            fig_wc, ax = plt.subplots()
+            ax.imshow(wc); ax.axis("off")
+            st.pyplot(fig_wc)
+        else:
+            st.write("Dados insuficientes para gerar Nuvem de SEO.")
 
-        st.metric("Lucro por Hora (PPH)", f"R$ {pph:.2f}")
-        if pph > 25: st.success("✅ PRIORIDADE MÁXIMA: Alta eficiência de tempo.")
-
-    # --- TAB 4: ROI PREDITIVO (MONTE CARLO) ---
-    with tab4:
-        st.subheader("Simulação de Quitação: Bambu Lab A1")
-        vendas_dia = st.slider("Expectativa de Vendas Diárias", 1, 20, 3)
-        margem_media = st.number_input("Margem Média por Peça (R$)", 40.0)
-        
-        # Simulação de 1000 cenários
-        dias_sim = []
-        for _ in range(1000):
-            # Variação de 20% para cima ou para baixo nas vendas
-            vendas_random = np.random.normal(vendas_dia, vendas_dia * 0.2)
-            dias_sim.append(META_INVESTIMENTO / (max(1, vendas_random) * margem_media))
-        
-        previsao = int(np.mean(dias_sim))
-        st.metric("Dias Estimados para Payback", f"{previsao} dias")
-        fig_roi = px.histogram(dias_sim, nbins=50, title="Probabilidade de Quitação (Cenários)", template="plotly_dark")
-        st.plotly_chart(fig_roi, use_container_width=True)
+    st.markdown("---")
+    st.write("### 📋 Base de Dados Consolidada")
+    st.dataframe(df[['Produto', 'Preco_Num', 'Vendas_Num', 'Fonte', 'Link']], use_container_width=True)
 
 else:
-    st.warning("⚠️ Transmissão interrompida. Verifique o Google Sheets.")
+    st.warning("⚠️ Sistema em espera. Verifique se o robô enviou os dados para as abas da Planilha.")
