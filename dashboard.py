@@ -5,42 +5,27 @@ import plotly.graph_objects as go
 import numpy as np
 from sklearn.cluster import KMeans
 from sklearn.linear_model import LinearRegression
-from sklearn.feature_extraction.text import CountVectorizer
-from wordcloud import WordCloud
+from wordcloud import WordCloud, STOPWORDS
 import matplotlib.pyplot as plt
+from thefuzz import process, fuzz # Biblioteca nova para comparação
 import re
 
-# --- 1. CONFIGURAÇÃO VISUAL ---
-st.set_page_config(
-    page_title="BCRUZ AI Intelligence 3D",
-    page_icon="🧠",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# --- 1. CONFIGURAÇÃO ---
+st.set_page_config(page_title="BCRUZ 3D Enterprise", layout="wide", page_icon="🏢")
 
-# Estilo CSS para deixar com cara de sistema executivo
-st.markdown("""
-<style>
-    .metric-card {background-color: #f0f2f6; border-radius: 10px; padding: 15px; box-shadow: 2px 2px 5px rgba(0,0,0,0.1);}
-    .stAlert {font-weight: bold;}
-    h1, h2, h3 {color: #0e1117;}
-</style>
-""", unsafe_allow_html=True)
-
-# --- 2. CARREGAMENTO E DATA SCIENCE ---
-# ⚠️⚠️ COLOQUE SEU LINK CSV PUBLICO AQUI ⚠️⚠️
+# ⚠️ SEU LINK CSV AQUI
 SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRtLCFvhbktUToSC6XCCtsEk-Fats-FqW8Nv_fG9AG_8fWfu7pMIFq7Zo0m0oS37r0coiqQyn9ZWc0F/pub?output=csv"
 
-@st.cache_data(ttl=300)
-def load_data():
+@st.cache_data(ttl=60)
+def carregar_dados():
     try:
-        # Lê o CSV e trata colunas
         df = pd.read_csv(SHEET_CSV_URL, on_bad_lines='skip')
         
-        # Limpeza de Colunas (Upper case para garantir)
+        # --- LIMPEZA ROBUSTA ---
+        # 1. Normaliza colunas
         df.columns = [c.strip().upper() for c in df.columns]
         
-        # 1. Tratamento de Preço
+        # 2. Identifica Preço
         col_preco = next((c for c in df.columns if "PREÇO" in c or "PRICE" in c), None)
         if col_preco:
             df['Preco_Num'] = df[col_preco].astype(str).str.replace('R$', '', regex=False)
@@ -49,175 +34,184 @@ def load_data():
         else:
             df['Preco_Num'] = 0.0
 
-        # 2. Tratamento de Prazo (Texto -> Número)
-        col_prazo = next((c for c in df.columns if "PRAZO" in c or "FLASH" in c), None)
+        # 3. Identifica Categoria e Fonte
+        if 'CATEGORIA' not in df.columns: df['CATEGORIA'] = 'Geral'
+        if 'FONTE' not in df.columns: df['FONTE'] = 'Elo7' # Default
+
+        # 4. Tratamento Inteligente de Prazo
+        col_prazo = next((c for c in df.columns if "PRAZO" in c), None)
         if col_prazo:
-            df['Prazo_Limpo'] = df[col_prazo].fillna("30 DIAS")
-            def get_days(txt):
-                txt = str(txt).upper()
-                if "IMEDIATO" in txt or "PRONTA" in txt: return 1
-                match = re.search(r'(\d+)', txt)
+            df['Prazo_Original'] = df[col_prazo].fillna("30 DIAS")
+            def extrair_dias(texto):
+                texto = str(texto).upper()
+                if "IMEDIATO" in texto or "PRONTA" in texto: return 1
+                match = re.search(r'(\d+)', texto)
                 return int(match.group(1)) if match else 15
-            df['Dias_Producao'] = df['Prazo_Limpo'].apply(get_days)
+            
+            df['Dias_Producao'] = df['Prazo_Original'].apply(extrair_dias)
+            df['Logistica'] = df['Dias_Producao'].apply(lambda x: "⚡ FLASH" if x <= 2 else ("🐢 LENTO" if x > 7 else "📦 NORMAL"))
         else:
             df['Dias_Producao'] = 15
-
-        # 3. Engenharia de Recursos (Clusters)
-        if len(df) > 5:
-            # Agrupa produtos em 3 categorias baseadas em Preço e Prazo
-            kmeans = KMeans(n_clusters=3, n_init=10, random_state=42)
-            df['Cluster'] = kmeans.fit_predict(df[['Preco_Num', 'Dias_Producao']])
-            # Nomeia os clusters baseado na média de preço
-            medias = df.groupby('Cluster')['Preco_Num'].mean().sort_values()
-            mapa = {medias.index[0]: 'Econômico', medias.index[1]: 'Padrão', medias.index[2]: 'Premium'}
-            df['Segmento'] = df['Cluster'].map(mapa)
-        else:
-            df['Segmento'] = 'Geral'
+            df['Logistica'] = "📦 NORMAL"
 
         return df
     except Exception as e:
-        st.error(f"Erro no Data Science: {e}")
+        st.error(f"Erro ao carregar dados: {e}")
         return pd.DataFrame()
 
-df = load_data()
+df = carregar_dados()
 
-# --- 3. SIDEBAR ---
+# --- SIDEBAR ---
 st.sidebar.title("🎛️ Centro de Comando")
 st.sidebar.markdown("---")
 
 if not df.empty:
-    # Filtros
-    col_cat = next((c for c in df.columns if "CATEG" in c), "CATEGORIA")
-    cats = st.sidebar.multiselect("Filtrar Nicho", df[col_cat].unique())
-    if cats: df = df[df[col_cat].isin(cats)]
+    # Filtros Globais
+    fontes = st.sidebar.multiselect("Fonte de Dados", df['FONTE'].unique(), default=df['FONTE'].unique())
+    cats = st.sidebar.multiselect("Categorias", df['CATEGORIA'].unique())
     
-    st.sidebar.markdown("### Configurações da Bambu A1")
-    custo_material = st.sidebar.number_input("Custo Material/Hora (R$)", value=10.0, step=1.0)
-    margem_desejada = st.sidebar.slider("Margem de Lucro (%)", 10, 100, 30)
+    # Aplica Filtros
+    df_filtered = df[df['FONTE'].isin(fontes)]
+    if cats: df_filtered = df_filtered[df_filtered['CATEGORIA'].isin(cats)]
 
-# --- 4. DASHBOARD PRINCIPAL ---
-st.title("🚀 BCRUZ 3D: Sistema de Inteligência de Mercado")
+    # --- ESTRUTURA DE ABAS ---
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "📊 Visão Executiva", 
+        "⚔️ Comparador de Preços", 
+        "🧠 IA & Insights", 
+        "🧪 Laboratório (Crie seu Gráfico)",
+        "📂 Base de Dados"
+    ])
 
-if df.empty:
-    st.warning("⚠️ Carregando dados... Se demorar, verifique o link CSV.")
-else:
-    # ABAS DO SISTEMA
-    tab_kpi, tab_ai, tab_gen = st.tabs(["📊 Visão de Mercado", "🤖 Análise Avançada (IA)", "✨ Gerador de Anúncio Perfeito"])
-
-    # --- ABA 1: VISÃO DE MERCADO ---
-    with tab_kpi:
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Concorrentes Mapeados", len(df))
-        c2.metric("Preço Médio Mercado", f"R$ {df['Preco_Num'].mean():.2f}")
-        c3.metric("Tempo Médio Entrega", f"{df['Dias_Producao'].mean():.1f} dias")
+    # =========================================================
+    # ABA 1: VISÃO EXECUTIVA (Resumo + Gráfico Categoria)
+    # =========================================================
+    with tab1:
+        st.markdown("### 🏢 Panorama Geral do Mercado")
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Produtos Monitorados", len(df_filtered))
+        k2.metric("Preço Médio", f"R$ {df_filtered['Preco_Num'].mean():.2f}")
+        k3.metric("Ticket Mais Alto", f"R$ {df_filtered['Preco_Num'].max():.2f}")
+        k4.metric("Concorrentes Imediatos", len(df_filtered[df_filtered['Logistica']=="⚡ FLASH"]))
         
-        # Oportunidade: Preço acima da média + Prazo Lento
-        opp = len(df[(df['Preco_Num'] > df['Preco_Num'].mean()) & (df['Dias_Producao'] > 5)])
-        c4.metric("🚨 Oportunidades Claras", opp, help="Produtos caros e lentos. Ataque aqui!")
-
         st.markdown("---")
         
-        g1, g2 = st.columns(2)
-        with g1:
-            fig = px.scatter(df, x="Dias_Producao", y="Preco_Num", color="Segmento", size="Preco_Num",
-                             hover_data=["PRODUTO"], title="Matriz de Valor: Tempo x Preço",
-                             labels={"Dias_Producao": "Dias para Produzir", "Preco_Num": "Preço de Venda"})
-            st.plotly_chart(fig, use_container_width=True)
-        
-        with g2:
-            # Gráfico de Rosca de Prazos
-            df['Tipo_Entrega'] = df['Dias_Producao'].apply(lambda x: "⚡ Imediato" if x <= 2 else ("📦 Normal" if x <= 10 else "🐢 Lento"))
-            fig2 = px.pie(df, names="Tipo_Entrega", title="Market Share Logístico", hole=0.4, 
-                          color_discrete_map={"⚡ Imediato": "#00FF00", "📦 Normal": "#FFA500", "🐢 Lento": "#FF0000"})
-            st.plotly_chart(fig2, use_container_width=True)
+        # GRÁFICO PEDIDO: PREÇO POR CATEGORIA
+        col_g1, col_g2 = st.columns(2)
+        with col_g1:
+            st.subheader("💰 Média de Preço por Categoria")
+            fig_cat = px.bar(df_filtered.groupby('CATEGORIA')['Preco_Num'].mean().reset_index().sort_values('Preco_Num'), 
+                             x='Preco_Num', y='CATEGORIA', orientation='h', text_auto='.2f',
+                             title="Onde está o dinheiro? (Ticket Médio)", color='Preco_Num')
+            st.plotly_chart(fig_cat, use_container_width=True)
+            
+        with col_g2:
+            st.subheader("📦 Volume de Produtos por Categoria")
+            fig_vol = px.pie(df_filtered, names='CATEGORIA', title="Saturação do Mercado")
+            st.plotly_chart(fig_vol, use_container_width=True)
 
-    # --- ABA 2: INTELIGÊNCIA ARTIFICIAL ---
-    with tab_ai:
-        st.subheader("🧠 Regressão Linear & Tendências")
-        st.info("A linha vermelha mostra se o cliente paga mais pela espera (personalização) ou se prefere rapidez.")
+    # =========================================================
+    # ABA 2: COMPARADOR DE PLATAFORMAS (Elo7 vs Outros)
+    # =========================================================
+    with tab2:
+        st.header("⚔️ Arena de Batalha: Comparação de Preços")
         
-        # Regressão Linear
-        X = df[['Dias_Producao']]
-        y = df['Preco_Num']
-        reg = LinearRegression().fit(X, y)
-        df['Tendencia'] = reg.predict(X)
+        if len(df['FONTE'].unique()) < 2:
+            st.warning("⚠️ Atenção: Você só tem dados de UMA FONTE (provavelmente Elo7). Para comparar, rode o robô na Shopee ou Mercado Livre também.")
+            st.info("Mostrando análise de variação interna por enquanto.")
         
-        fig_reg = go.Figure()
-        fig_reg.add_trace(go.Scatter(x=df['Dias_Producao'], y=df['Preco_Num'], mode='markers', name='Mercado'))
-        fig_reg.add_trace(go.Scatter(x=df['Dias_Producao'], y=df['Tendencia'], mode='lines', name='Tendência IA', line=dict(color='red', width=3)))
-        st.plotly_chart(fig_reg, use_container_width=True)
-        
-        # Nuvem de Palavras
-        st.subheader("☁️ O que vende? (Nuvem de Palavras)")
-        try:
-            texto = " ".join(df['PRODUTO'].dropna().astype(str))
-            # Stopwords simples em PT
-            stops = ["de", "do", "da", "para", "com", "em", "um", "uma", "o", "a", "e", "kit", "3d", "pla", "impressão", "impresso"]
-            wc = WordCloud(width=800, height=300, background_color='white', stopwords=stops).generate(texto)
-            plt.figure(figsize=(10, 5))
-            plt.imshow(wc, interpolation='bilinear')
-            plt.axis("off")
-            st.pyplot(plt)
-        except:
-            st.write("Dados de texto insuficientes.")
-
-    # --- ABA 3: O GERADOR DE PRODUTOS DO PRESIDENTE (A JÓIA DA COROA) ---
-    with tab_gen:
-        st.markdown("### 🛠️ Criador de Anúncio Campeão")
-        st.markdown("Digite o que você quer vender. A IA vai analisar os concorrentes e calcular o Preço e o Título ideal.")
-        
-        termo_busca = st.text_input("Qual produto você vai imprimir?", placeholder="Ex: Vaso Robert, Suporte Fone...")
+        # Lógica de Fuzzy Matching (Encontrar produtos iguais)
+        st.subheader("🔍 Buscador de Produtos Similares")
+        termo_busca = st.text_input("Digite o nome de um produto para comparar preços em todo o mercado:", placeholder="Ex: Vaso Robert")
         
         if termo_busca:
-            # 1. Filtra a base para encontrar similares
-            df_similar = df[df['PRODUTO'].str.contains(termo_busca, case=False, na=False)]
+            # Filtra produtos que parecem com o que vc digitou
+            matches = process.extract(termo_busca, df_filtered['PRODUTO'].unique(), limit=20, scorer=fuzz.token_set_ratio)
+            produtos_similares = [x[0] for x in matches if x[1] > 60]
             
-            if len(df_similar) > 0:
-                st.success(f"🔎 Encontrei {len(df_similar)} concorrentes vendendo '{termo_busca}'. Analisando...")
+            df_comparacao = df_filtered[df_filtered['PRODUTO'].isin(produtos_similares)]
+            
+            if not df_comparacao.empty:
+                # Gráfico de Dispersão Comparativa
+                fig_comp = px.scatter(df_comparacao, x="FONTE", y="Preco_Num", color="FONTE", 
+                                      size="Preco_Num", hover_data=["PRODUTO", "Logistica"],
+                                      title=f"Dispersão de Preços: '{termo_busca}'")
+                st.plotly_chart(fig_comp, use_container_width=True)
                 
-                # --- ANÁLISE DE PALAVRAS-CHAVE (NLP) ---
-                try:
-                    # Vetorização para achar n-grams (palavras compostas) mais usadas
-                    vec = CountVectorizer(ngram_range=(2, 2), stop_words=["de", "do", "para", "com", "em", "3d"])
-                    X_vec = vec.fit_transform(df_similar['PRODUTO'])
-                    sum_words = X_vec.sum(axis=0)
-                    words_freq = [(word, sum_words[0, idx]) for word, idx in vec.vocabulary_.items()]
-                    words_freq = sorted(words_freq, key=lambda x: x[1], reverse=True)
-                    top_keywords = [w[0].title() for w in words_freq[:3]] # Top 3 combinações
-                except:
-                    top_keywords = ["Decorativo", "Personalizado", "Exclusivo"]
-
-                # --- CÁLCULO DE PREÇO ---
-                preco_medio = df_similar['Preco_Num'].mean()
-                preco_max = df_similar['Preco_Num'].quantile(0.90) # Top 10% mais caros
-                preco_sugerido = preco_medio * 1.1 # 10% acima da média pois temos envio imediato
-                
-                # --- GERADOR DE TÍTULO ---
-                palavras_poder = " ".join(top_keywords)
-                titulo_gerado = f"{termo_busca.title()} {palavras_poder} - Pronta Entrega"
-                
-                # --- EXIBIÇÃO DO RESULTADO ---
-                st.markdown("---")
-                col_res1, col_res2 = st.columns(2)
-                
-                with col_res1:
-                    st.markdown("#### 🏆 Título Sugerido pela IA")
-                    st.code(titulo_gerado, language="text")
-                    st.caption("Baseado nas palavras mais frequentes dos concorrentes de sucesso.")
-                    
-                    st.markdown("#### 🏷️ Tags Recomendadas")
-                    st.write(", ".join([f"#{k.replace(' ', '')}" for k in top_keywords] + ["#ProntaEntrega", "#3DPrinting"]))
-
-                with col_res2:
-                    st.markdown("#### 💲 Sugestão de Preço")
-                    st.metric("Preço de Venda Ideal", f"R$ {preco_sugerido:.2f}", 
-                              delta=f"R$ {preco_sugerido - custo_material:.2f} (Lucro Est.)")
-                    
-                    st.info(f"O mercado varia de R$ {df_similar['Preco_Num'].min():.2f} até R$ {preco_max:.2f}.")
-                    
-                # Mostra os concorrentes usados na base
-                with st.expander(f"Ver os {len(df_similar)} concorrentes analisados"):
-                    st.dataframe(df_similar[['PRODUTO', 'Preco_Num', 'Prazo_Limpo', 'LINK']])
-                    
+                st.dataframe(df_comparacao[['FONTE', 'PRODUTO', 'Preco_Num', 'Logistica', 'LINK']], hide_index=True)
             else:
-                st.warning(f"Não encontrei concorrentes diretos para '{termo_busca}' na base atual. Tente um termo mais genérico.")
+                st.error("Nenhum produto similar encontrado.")
+
+    # =========================================================
+    # ABA 3: INTELIGÊNCIA ARTIFICIAL (Mantido da v35)
+    # =========================================================
+    with tab3:
+        c_ia1, c_ia2 = st.columns(2)
+        with c_ia1:
+            st.subheader("🧠 Clusterização (Segmentos)")
+            if len(df_filtered) > 10:
+                X = df_filtered[['Preco_Num', 'Dias_Producao']]
+                kmeans = KMeans(n_clusters=3, n_init=10).fit(X)
+                df_filtered['Cluster'] = kmeans.labels_
+                fig_clus = px.scatter(df_filtered, x="Dias_Producao", y="Preco_Num", color=df_filtered['Cluster'].astype(str),
+                                      title="Segmentos de Mercado (IA)")
+                st.plotly_chart(fig_clus, use_container_width=True)
+            else:
+                st.warning("Dados insuficientes para IA.")
+                
+        with c_ia2:
+            st.subheader("☁️ Nuvem de Oportunidades (SEO)")
+            texto = " ".join(df_filtered['PRODUTO'].astype(str))
+            sw = set(STOPWORDS)
+            sw.update(["de", "para", "com", "em", "kit", "3d", "pla"])
+            try:
+                wc = WordCloud(width=800, height=400, background_color='white', stopwords=sw).generate(texto)
+                fig_wc, ax = plt.subplots()
+                ax.imshow(wc, interpolation='bilinear')
+                ax.axis("off")
+                st.pyplot(fig_wc)
+            except: st.write("Texto insuficiente.")
+
+    # =========================================================
+    # ABA 4: LABORATÓRIO (VOCÊ PEDE O GRÁFICO)
+    # =========================================================
+    with tab4:
+        st.header("🧪 Laboratório de Análise Personalizada")
+        st.markdown("Não achou o gráfico que queria? **Monte o seu agora.**")
+        
+        col_ctrl1, col_ctrl2, col_ctrl3 = st.columns(3)
+        
+        with col_ctrl1:
+            eixo_x = st.selectbox("Escolha o Eixo X (Horizontal)", df_filtered.columns, index=list(df_filtered.columns).index('CATEGORIA') if 'CATEGORIA' in df_filtered.columns else 0)
+        
+        with col_ctrl2:
+            eixo_y = st.selectbox("Escolha o Eixo Y (Vertical/Valor)", [c for c in df_filtered.columns if df_filtered[c].dtype in ['float64', 'int64']], index=0)
+            
+        with col_ctrl3:
+            tipo_grafico = st.selectbox("Tipo de Gráfico", ["Barras", "Linha", "Dispersão (Pontos)", "Pizza", "Histograma", "Boxplot"])
+            
+        st.markdown("---")
+        
+        # Gerador Mágico de Gráficos
+        if tipo_grafico == "Barras":
+            st.plotly_chart(px.bar(df_filtered, x=eixo_x, y=eixo_y, color="FONTE", barmode='group'), use_container_width=True)
+        elif tipo_grafico == "Linha":
+            st.plotly_chart(px.line(df_filtered.sort_values(eixo_x), x=eixo_x, y=eixo_y, color="FONTE"), use_container_width=True)
+        elif tipo_grafico == "Dispersão (Pontos)":
+            st.plotly_chart(px.scatter(df_filtered, x=eixo_x, y=eixo_y, color="FONTE", hover_data=['PRODUTO']), use_container_width=True)
+        elif tipo_grafico == "Pizza":
+            st.plotly_chart(px.pie(df_filtered, names=eixo_x, values=eixo_y), use_container_width=True)
+        elif tipo_grafico == "Histograma":
+            st.plotly_chart(px.histogram(df_filtered, x=eixo_x, color="FONTE"), use_container_width=True)
+        elif tipo_grafico == "Boxplot":
+            st.plotly_chart(px.box(df_filtered, x=eixo_x, y=eixo_y, color="FONTE"), use_container_width=True)
+
+    # =========================================================
+    # ABA 5: DADOS BRUTOS (PLANILHA)
+    # =========================================================
+    with tab5:
+        st.header("📂 Dados da Planilha")
+        st.dataframe(df_filtered, use_container_width=True)
+
+else:
+    st.error("Erro crítico: Não foi possível ler a planilha. Verifique o Link CSV.")
