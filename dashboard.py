@@ -9,19 +9,20 @@ from wordcloud import WordCloud
 import matplotlib.pyplot as plt
 from sklearn.cluster import KMeans
 
-# --- CONFIGURAÇÃO DE ELITE ---
-st.set_page_config(page_title="BCRUZ COMMAND | ORACLE 3D", layout="wide", page_icon="⚡")
+# --- CONFIGURAÇÃO BCRUZ COMMAND ---
+st.set_page_config(page_title="BCRUZ | ORACLE 3D v7.0", layout="wide", page_icon="⚡")
 
-# URL ATUALIZADA PELO USUÁRIO
+# URL DO GOOGLE APPS SCRIPT
 URL_API = "https://script.google.com/macros/s/AKfycbx9ksJ2KMhPwyRaymUoYvAXR2Kvr_bcCUyZT-ICHNF0OwkgxVWm9HPqwQMo24LKz2gn/exec"
-INVESTIMENTO_INICIAL = 4200.00
+INVESTIMENTO_A1 = 4200.00
 
-# Estilização Neon-Dark (CORREÇÃO: unsafe_allow_html)
+# CSS customizado para manter a vibe Dark/Neon
 st.markdown("""
     <style>
     .stApp { background-color: #000000; color: #00FF41; }
-    div[data-testid="stMetricValue"] { color: #00FF41; font-family: 'Courier New'; }
-    .stTabs [data-baseweb="tab-list"] { background-color: #000; border-bottom: 1px solid #0f0; }
+    [data-testid="stMetricValue"] { color: #00FF41 !important; font-family: 'Courier New', monospace; }
+    .stTabs [data-baseweb="tab-list"] { background-color: #000; border-bottom: 2px solid #00FF41; }
+    .stDataFrame { border: 1px solid #00FF41; border-radius: 5px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -30,77 +31,89 @@ def clean_val(v):
     res = re.findall(r"[-+]?\d*\.\d+|\d+", str(v).replace('.', '').replace(',', '.'))
     return float(res[0]) if res else 0.0
 
-@st.cache_data(ttl=60) # Cache de 1 minuto para agilizar o celular
-def load_and_analyze():
+@st.cache_data(ttl=60)
+def load_data():
     try:
         res = requests.get(URL_API, timeout=30)
         df = pd.DataFrame(res.json())
         if df.empty: return df
-        df['Preco_Num'] = df['Preço'].apply(clean_val)
-        df['Vendas_Num'] = df['Vendas'].apply(clean_val)
-        # ID Score: Prioriza alto preço e alto volume
-        df['ID_Score'] = (df['Preco_Num'] * df['Vendas_Num']) / (df['Produto'].str.len() + 1)
+        df['Preco_N'] = df['Preço'].apply(clean_val)
+        df['Vendas_N'] = df['Vendas'].apply(clean_val)
+        df['Data_DT'] = pd.to_datetime(df['Data'], errors='coerce')
+        # Score de Oportunidade BCRUZ
+        df['Score'] = (df['Preco_N'] * df['Vendas_N']) / (df['Produto'].str.len() + 1)
         return df
-    except Exception as e:
-        return pd.DataFrame()
+    except: return pd.DataFrame()
 
-df = load_and_analyze()
+df = load_data()
 
 if not df.empty:
-    st.title("⚡ BCRUZ COMMAND CENTER")
+    st.title("🏹 BCRUZ INTELLIGENCE: DOMINAÇÃO SHOPEE & ELO7")
     
-    tab_roi, tab_radar, tab_seo = st.tabs(["💰 MOTOR DE ROI", "📡 RADAR DE OPORTUNIDADE", "✍️ SEO ALQUIMISTA"])
+    tab_roi, tab_mercado, tab_seo, tab_tendencia = st.tabs(["💰 PAYBACK A1", "📡 RADAR DE ELITE", "✍️ SEO MASTER", "📈 TENDÊNCIAS"])
 
     with tab_roi:
-        st.subheader("Predição de Payback (Bambu A1)")
-        col_r1, col_r2 = st.columns([1, 2])
-        with col_r1:
-            lucro_total = st.number_input("Lucro Total Acumulado (R$)", value=0.0, step=50.0)
-            meta_dia = st.number_input("Meta de Lucro Diário (R$)", value=50.0, step=10.0)
-            faltam = INVESTIMENTO_INICIAL - lucro_total
-            dias = int(faltam / meta_dia) if meta_dia > 0 else 0
-            
-            st.metric("Faltam para Quitar", f"R$ {faltam:.2f}")
-            st.info(f"Faltam aproximadamente **{dias} dias** de operação.")
-        with col_r2:
-            fig_gauge = go.Figure(go.Indicator(
-                mode = "gauge+number", value = lucro_total,
-                domain = {'x': [0, 1], 'y': [0, 1]},
-                gauge = {'axis': {'range': [None, INVESTIMENTO_INICIAL]},
-                         'bar': {'color': "#00FF41"},
-                         'steps' : [{'range': [0, 2100], 'color': "#111"}]}))
-            st.plotly_chart(fig_gauge, use_container_width=True)
+        st.subheader("Calculadora de Quitação Acelerada")
+        c1, c2, c3 = st.columns(3)
+        lucro_ja = c1.number_input("Lucro Acumulado (R$)", value=0.0)
+        meta_dia = c2.number_input("Meta Diária de Lucro (R$)", value=70.0)
+        
+        faltam = INVESTIMENTO_A1 - lucro_ja
+        dias_restantes = int(faltam / meta_dia) if meta_dia > 0 else 0
+        
+        c3.metric("Status do Investimento", f"R$ {faltam:.2f}", delta=f"-{ (lucro_ja/INVESTIMENTO_A1)*100 :.1f}%")
+        
+        fig_roi = go.Figure(go.Indicator(
+            mode = "gauge+number", value = lucro_ja,
+            title = {'text': "Progresso da Bambu Lab A1"},
+            gauge = {'axis': {'range': [None, INVESTIMENTO_A1]}, 'bar': {'color': "#00FF41"}}))
+        st.plotly_chart(fig_roi, use_container_width=True)
+        st.success(f"Faltam aproximadamente **{dias_restantes} dias** para a sua A1 se pagar totalmente.")
 
-    with tab_radar:
-        st.subheader("Clusters de Elite (K-Means)")
-        X = df[['Preco_Num', 'Vendas_Num']]
-        # Ajuste dinâmico de clusters baseado no volume de dados
+    with tab_mercado:
+        st.subheader("Análise de Clusters (Onde o Caminho está Livre)")
+        # ML: K-Means para separar o joio do trigo
+        X = df[['Preco_N', 'Vendas_N']]
         n_clusters = min(3, len(df))
         km = KMeans(n_clusters=n_clusters, n_init=10).fit(X)
-        df['Segmento'] = km.labels_
+        df['Cluster'] = km.labels_
+        df['Perfil'] = df['Cluster'].map({0: "Saturado/Barato", 1: "Oportunidade", 2: "Elite/Premium"})
         
-        fig_scatter = px.scatter(df, x="Preco_Num", y="Vendas_Num", 
-                                 color=df['Segmento'].astype(str), 
-                                 size="ID_Score", hover_name="Produto", 
-                                 template="plotly_dark", color_discrete_sequence=px.colors.qualitative.Neon)
+        fig_scatter = px.scatter(df, x="Preco_N", y="Vendas_N", color="Perfil", size="Score",
+                                 hover_name="Produto", template="plotly_dark",
+                                 color_discrete_sequence=px.colors.qualitative.Vivid) # CORRIGIDO AQUI
         st.plotly_chart(fig_scatter, use_container_width=True)
 
     with tab_seo:
-        st.subheader("SEO Inteligente: Palavras que Vendem")
-        top_vendas = df[df['Vendas_Num'] >= df['Vendas_Num'].median()]
+        st.subheader("SEO Alquimista: Títulos que Vendem")
+        top_vendas = df[df['Vendas_N'] >= df['Vendas_N'].median()]
         if not top_vendas.empty:
             text = " ".join(top_vendas['Produto']).lower()
-            stopwords = ['com', 'para', 'kit', 'envio', '3d', 'promoção', 'shopee', 'elo7', 'de', 'do', 'da']
-            wc = WordCloud(width=800, height=400, background_color="black", colormap="Greens", stopwords=stopwords).generate(text)
+            sw = ['com', 'para', 'kit', 'envio', '3d', 'promoção', 'shopee', 'elo7', 'da', 'do', 'de']
+            wc = WordCloud(width=800, height=350, background_color="black", colormap="Greens", stopwords=sw).generate(text)
             fig_wc, ax = plt.subplots()
             ax.imshow(wc); ax.axis("off")
             st.pyplot(fig_wc)
+            
+            # Sugestão de Título
+            palavras_chave = Counter([w for w in re.findall(r'\w+', text) if len(w) > 3 and w not in sw]).most_common(5)
+            sugestao = " ".join([p[0].upper() for p in palavras_chave])
+            st.info(f"🚀 **Sugestão de Título Baseada em Dados:** {sugestao} - ALTA RESISTÊNCIA PREMIUM")
+
+    with tab_tendencia:
+        st.subheader("Análise de Saturação Temporal")
+        df_tend = df.sort_values('Data_DT')
+        if len(df_tend) > 1:
+            fig_line = px.line(df_tend, x="Data_DT", y="Preco_N", color="Categoria", 
+                               title="Variação de Preço no Tempo (Se cair, o mercado saturou!)",
+                               template="plotly_dark")
+            st.plotly_chart(fig_line, use_container_width=True)
         else:
-            st.write("Dados insuficientes para gerar Nuvem de SEO.")
+            st.info("Aguardando mais coletas do robô para gerar histórico de tendência.")
 
     st.markdown("---")
-    st.write("### 📋 Base de Dados Consolidada")
-    st.dataframe(df[['Produto', 'Preco_Num', 'Vendas_Num', 'Fonte', 'Link']], use_container_width=True)
+    st.write("### 📑 Comando Operacional (Tabela Completa)")
+    st.dataframe(df[['Perfil', 'Fonte', 'Produto', 'Preco_N', 'Vendas_N', 'Link']], use_container_width=True)
 
 else:
-    st.warning("⚠️ Sistema em espera. Verifique se o robô enviou os dados para as abas da Planilha.")
+    st.warning("⚠️ O 'Oracle' está sem dados. Rode o robô no PC para alimentar a planilha.")
