@@ -223,7 +223,8 @@ if gemini_client is None or not st.secrets.get("GEMINI_API_KEY"):
     st.sidebar.caption("Status: âŒ IA indisponÃ­vel")
 else:
     st.sidebar.caption(f"Status: âœ… ativo | modelo: `{get_gemini_model_id()}`")
-    st.sidebar.caption("Dica: se der 404, use `GEMINI_MODEL="<id>"` nos Secrets e reinicie.")
+    st.sidebar.caption('Dica: se der 404, use `GEMINI_MODEL="<id>"` nos Secrets e reinicie.')
+
 
 st.sidebar.markdown("---")
 
