@@ -8,6 +8,7 @@ numpy
 nltk
 thefuzz
 python-levenshtein
+streamlit-plotly-events
 
 # extras para "tudo" (com fallback no código se não carregar)
 sentence-transformers
