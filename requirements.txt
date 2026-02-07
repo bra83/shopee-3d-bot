@@ -9,7 +9,7 @@ nltk
 thefuzz
 python-levenshtein
 streamlit-plotly-events
-google-genai
+google-generativeai
 requests
 
 
