@@ -10,6 +10,8 @@ thefuzz
 python-levenshtein
 streamlit-plotly-events
 google-genai
+requests
+
 
 
 # extras para "tudo" (com fallback no código se não carregar)
