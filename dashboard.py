@@ -1,6 +1,7 @@
 # dashboard.py
 # BCRUZ 3D Enterprise — Decision Intelligence Edition
-# (Additive upgrade: mantém tudo que você já tem e acrescenta MUITO em cima)
+# (Mantém seu dashboard original e adiciona módulos de decisão + ML.
+#  Inclui: contagem de itens válidos por etapa, e modelo de preço aplicando no filtro.)
 
 import streamlit as st
 import pandas as pd
@@ -14,7 +15,7 @@ from thefuzz import process, fuzz
 import re
 from collections import Counter
 
-# --- ML extra (tudo com fallback para não quebrar deploy) ---
+# --- ML extra ---
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.compose import ColumnTransformer
@@ -66,8 +67,9 @@ def limpar_preco(valor):
             return 0.0
 
     # --- GUILHOTINA DE ERROS ÓBVIOS ---
+    # Se for > 1500, ignora (provável impressora / bundle)
     if val > 1500.0:
-        return 0.0  # Zera para ser filtrado depois
+        return 0.0
 
     return val
 
@@ -79,20 +81,17 @@ def normalize_text(s: str) -> str:
     s = "" if s is None else str(s)
     s = s.lower().strip()
     s = re.sub(r"\s+", " ", s)
-    # tira ruídos comuns, preservando números e letras
-    s = re.sub(r"[^\w\s\-\/]", " ", s)
+    s = re.sub(r"[^\w\s\-\/]", " ", s)  # remove ruído
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
 
 def extract_features_from_title(title: str) -> dict:
     """
-    Extrai atributos simples do título (sem precisar de NLP pesado).
-    Serve pra precificação, diagnóstico e recomendação.
+    Extrai atributos simples do título.
     """
     t = normalize_text(title)
 
-    # flags
     is_kit = int(bool(re.search(r"\bkit\b|\bconjunto\b|\bcombo\b", t)))
     is_personalizado = int(bool(re.search(r"\bpersonaliz", t)))
     is_pronta_entrega = int(bool(re.search(r"\bpronta\b|\bpronto\b|\bimediat", t)))
@@ -103,9 +102,7 @@ def extract_features_from_title(title: str) -> dict:
     is_action = int(bool(re.search(r"\bfigure\b|\baction\b|\bminiatura\b|\bstatue\b|\bestatua\b", t)))
     is_gamer = int(bool(re.search(r"\bgamer\b|\bplaystation\b|\bxbox\b|\bnintendo\b|\bpc\b", t)))
 
-    # medidas e números
     nums = re.findall(r"\b(\d{1,3})\s?(cm|mm)?\b", t)
-    # pega o maior número "parecido com tamanho"
     size_num = 0
     for n, unit in nums:
         try:
@@ -116,7 +113,6 @@ def extract_features_from_title(title: str) -> dict:
         except:
             pass
 
-    # palavras "premium"
     premium = int(bool(re.search(r"\bpremium\b|\bdeluxe\b|\bmetal\b|\bvelvet\b|\babs\b|\bpetg\b|\bresina\b", t)))
 
     return dict(
@@ -136,17 +132,32 @@ def extract_features_from_title(title: str) -> dict:
     )
 
 
+def format_brl(v: float) -> str:
+    try:
+        return f"R$ {float(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    except:
+        return "R$ 0,00"
+
+
+# -----------------------------
+# CARREGAMENTO + CONTAGEM POR ETAPA (NOVO)
+# -----------------------------
 @st.cache_data(ttl=60)
 def carregar_dados():
     dfs = []
     fontes = [{"url": URL_ELO7, "nome": "Elo7"}, {"url": URL_SHOPEE, "nome": "Shopee"}]
+
+    stats = []
+    per_source = []
 
     for f in fontes:
         try:
             temp_df = pd.read_csv(f["url"], on_bad_lines="skip", dtype=str)
             temp_df.columns = [str(c).strip().upper() for c in temp_df.columns]
 
+            raw_n = int(len(temp_df))
             if temp_df.empty:
+                per_source.append({"fonte": f["nome"], "raw": raw_n, "validos": 0})
                 continue
 
             # Mapeamento
@@ -165,6 +176,8 @@ def carregar_dados():
                 temp_df["Preco_Num"] = temp_df[col_preco].apply(limpar_preco)
             else:
                 temp_df["Preco_Num"] = 0.0
+
+            after_price_n = int(len(temp_df))
 
             # Lógica de Prazo
             if col_prazo:
@@ -188,22 +201,31 @@ def carregar_dados():
                 if c not in temp_df.columns:
                     temp_df[c] = ""
 
-            # FILTRO LIMPO: Remove preços zerados ou inválidos (que a Guilhotina pegou)
-            temp_df = temp_df[temp_df["Preco_Num"] > 0.1]
+            # FILTRO LIMPO: Remove preços zerados ou inválidos
+            temp_df = temp_df[temp_df["Preco_Num"] > 0.1].copy()
+            after_valid_n = int(len(temp_df))
+
+            stats.append({"raw": raw_n, "after_price": after_price_n, "after_valid": after_valid_n})
+            per_source.append({"fonte": f["nome"], "raw": raw_n, "validos": after_valid_n})
 
             dfs.append(temp_df[cols])
 
         except:
-            pass
+            per_source.append({"fonte": f["nome"], "raw": 0, "validos": 0})
+            continue
 
-    # Concatena tudo
     final_df = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
 
-    # --- FILTRO ESTATÍSTICO AUTOMÁTICO (NOVO!) ---
-    # Remove os 2% mais caros (Outliers extremos que sobraram)
+    # --- FILTRO ESTATÍSTICO AUTOMÁTICO ---
     if not final_df.empty:
         corte_superior = final_df["Preco_Num"].quantile(0.98)
-        final_df = final_df[final_df["Preco_Num"] <= corte_superior]
+        final_df = final_df[final_df["Preco_Num"] <= corte_superior].copy()
+
+    # salva métricas (visíveis depois)
+    final_df.attrs["rows_raw_total"] = int(sum(x.get("raw", 0) for x in stats))
+    final_df.attrs["rows_after_price_clean"] = int(sum(x.get("after_price", 0) for x in stats))
+    final_df.attrs["rows_after_filter_valid"] = int(sum(x.get("after_valid", 0) for x in stats))
+    final_df.attrs["per_source"] = per_source
 
     return final_df
 
@@ -211,7 +233,7 @@ def carregar_dados():
 df = carregar_dados()
 
 # -----------------------------------------
-# NOVO: ENRIQUECIMENTO DE DADOS (ADD-ON)
+# ENRIQUECIMENTO DE DADOS
 # -----------------------------------------
 @st.cache_data(ttl=300)
 def enrich_df(base_df: pd.DataFrame) -> pd.DataFrame:
@@ -226,8 +248,7 @@ def enrich_df(base_df: pd.DataFrame) -> pd.DataFrame:
     feats_df = pd.DataFrame(list(feats))
     d = pd.concat([d.reset_index(drop=True), feats_df.reset_index(drop=True)], axis=1)
 
-    # Outliers/anomalias (preço)
-    # IsolationForest
+    # Anomalias
     try:
         iso = IsolationForest(n_estimators=200, contamination=0.05, random_state=42)
         d["anomaly_iso"] = iso.fit_predict(d[["Preco_Num"]])
@@ -235,7 +256,6 @@ def enrich_df(base_df: pd.DataFrame) -> pd.DataFrame:
     except:
         d["is_anomaly_iso"] = 0
 
-    # LOF (LocalOutlierFactor) - precisa fit_predict no próprio dataset
     try:
         lof = LocalOutlierFactor(n_neighbors=min(35, max(5, len(d) // 20)))
         lof_pred = lof.fit_predict(d[["Preco_Num"]])
@@ -248,18 +268,11 @@ def enrich_df(base_df: pd.DataFrame) -> pd.DataFrame:
     return d
 
 
-df_enriched = enrich_df(df)
-
 # -----------------------------------------
-# NOVO: EMBEDDINGS / VETORES (ADD-ON)
+# VETORES DE TEXTO (SBERT opcional, fallback TF-IDF+SVD)
 # -----------------------------------------
 @st.cache_data(ttl=300)
 def compute_text_vectors(texts: pd.Series, method: str = "auto", max_features: int = 4000):
-    """
-    Retorna (X, vectorizer_name).
-    - Tenta sentence-transformers se disponível (method auto/sbert).
-    - Caso contrário usa TF-IDF + SVD para "embeddings leves".
-    """
     texts = texts.fillna("").astype(str).tolist()
 
     if method in ("auto", "sbert"):
@@ -271,10 +284,8 @@ def compute_text_vectors(texts: pd.Series, method: str = "auto", max_features: i
             return np.array(X), "SBERT (MiniLM multilingual)"
         except:
             if method == "sbert":
-                # força sbert e falhou
                 pass
 
-    # fallback: TF-IDF + SVD
     tfidf = TfidfVectorizer(
         max_features=max_features,
         ngram_range=(1, 2),
@@ -282,36 +293,24 @@ def compute_text_vectors(texts: pd.Series, method: str = "auto", max_features: i
         max_df=0.95,
     )
     X_tfidf = tfidf.fit_transform(texts)
-    # reduz dimensão pra ficar "embedding-like"
     n_comp = int(min(128, max(8, X_tfidf.shape[1] - 1)))
     svd = TruncatedSVD(n_components=n_comp, random_state=42)
     X = svd.fit_transform(X_tfidf)
-    # normaliza
     X = X / (np.linalg.norm(X, axis=1, keepdims=True) + 1e-9)
     return X, f"TF-IDF(1-2gram) + SVD({n_comp})"
 
 
 # -----------------------------------------
-# NOVO: CANONICALIZAÇÃO / DEDUP (ADD-ON)
+# CANONICALIZAÇÃO / DEDUP
 # -----------------------------------------
 @st.cache_data(ttl=300)
 def canonicalize_products(d: pd.DataFrame, max_groups: int = 250):
-    """
-    Cria PRODUCT_CANON (nome canônico) e GROUP_ID por similaridade de texto.
-    Estratégia:
-      - vetores de texto
-      - KMeans para "pré-grupos"
-      - dentro do grupo, escolhe representante (título mais frequente/curto)
-    """
     if d is None or d.empty:
         return d
 
     out = d.copy()
-
-    # Vetores (rápido e resiliente)
     X, vec_name = compute_text_vectors(out["PRODUTO_NORM"], method="auto")
 
-    # quantidade de clusters: heurística
     n = len(out)
     k = int(np.clip(np.sqrt(n), 10, max_groups))
     try:
@@ -322,15 +321,10 @@ def canonicalize_products(d: pd.DataFrame, max_groups: int = 250):
 
     out["GROUP_ID"] = labels
 
-    # escolhe canônico por grupo: o "mais frequente"; em empate, o menor (mais limpo)
     canon = []
     for gid, grp in out.groupby("GROUP_ID"):
         counts = grp["PRODUTO"].astype(str).value_counts()
-        if len(counts) > 0:
-            best = counts.index[0]
-        else:
-            best = grp["PRODUTO"].astype(str).iloc[0]
-        # ajusta: se tiver muitos repetidos com variação, escolhe o menor
+        best = counts.index[0] if len(counts) else grp["PRODUTO"].astype(str).iloc[0]
         candidates = counts.index.tolist()[:10]
         if candidates:
             best = sorted(candidates, key=lambda s: (len(s), s.lower()))[0]
@@ -344,23 +338,17 @@ def canonicalize_products(d: pd.DataFrame, max_groups: int = 250):
     return out
 
 
-df_enriched = canonicalize_products(df_enriched)
-
 # -----------------------------------------
-# NOVO: CLUSTERING DE MERCADO (ADD-ON)
+# CLUSTERING DE MERCADO
 # -----------------------------------------
 @st.cache_data(ttl=300)
 def market_clusters(d: pd.DataFrame, n_clusters: int = 18):
-    """
-    Clusters "de mercado" em cima de texto.
-    """
     if d is None or d.empty:
         return d
 
     out = d.copy()
     X, vec_name = compute_text_vectors(out["PRODUTO_NORM"], method="auto")
 
-    # cluster principal
     n = len(out)
     k = int(np.clip(n_clusters, 6, min(40, max(6, int(np.sqrt(n) * 1.2)))))
     try:
@@ -369,7 +357,6 @@ def market_clusters(d: pd.DataFrame, n_clusters: int = 18):
     except:
         out["CLUSTER_MKT"] = 0
 
-    # nome do cluster: palavras mais representativas via TF-IDF local (leve)
     try:
         tfidf = TfidfVectorizer(max_features=2500, ngram_range=(1, 2), min_df=2, max_df=0.95)
         X_t = tfidf.fit_transform(out["PRODUTO_NORM"].fillna("").astype(str))
@@ -381,13 +368,11 @@ def market_clusters(d: pd.DataFrame, n_clusters: int = 18):
             if len(idx) == 0:
                 cluster_names[cid] = f"Cluster {cid}"
                 continue
-            # média dos vetores
             mean_vec = X_t[idx].mean(axis=0)
             mean_vec = np.asarray(mean_vec).ravel()
             top_idx = mean_vec.argsort()[-4:][::-1]
             top_terms = [vocab[i] for i in top_idx if mean_vec[i] > 0]
-            name = " / ".join(top_terms) if top_terms else f"Cluster {cid}"
-            cluster_names[cid] = name
+            cluster_names[cid] = " / ".join(top_terms) if top_terms else f"Cluster {cid}"
 
         out["CLUSTER_NOME"] = out["CLUSTER_MKT"].map(cluster_names).fillna(out["CLUSTER_MKT"].astype(str))
     except:
@@ -398,37 +383,33 @@ def market_clusters(d: pd.DataFrame, n_clusters: int = 18):
     return out
 
 
-df_enriched = market_clusters(df_enriched)
-
 # -----------------------------------------
-# NOVO: MODELO DE PREÇO (ADD-ON)
+# MODELO DE PREÇO (TREINA NO TOTAL, PREVÊ NO TOTAL)
 # -----------------------------------------
 @st.cache_data(ttl=300)
-def train_price_model(d: pd.DataFrame):
+def train_price_model(d: pd.DataFrame, min_samples: int = 40):
     """
-    Treina regressor pra prever Preco_Num.
-    Retorna: model, métricas, df_pred com colunas adicionais
+    Treina regressor pra prever Preco_Num no dataset TOTAL.
+    Se tiver poucos dados válidos, retorna None.
     """
-    if d is None or d.empty or len(d) < 80:
+    if d is None or d.empty or len(d) < min_samples:
         return None, None, d
 
     data = d.copy()
-
-    # features
     y = data["Preco_Num"].astype(float)
 
-    # texto como TF-IDF (leve) + categorias
     text_col = "PRODUTO_NORM"
     cat_cols = ["FONTE", "Logistica", "CATEGORIA"]
     num_cols = ["Dias_Producao", "size_num", "premium", "is_kit", "is_personalizado", "word_count", "title_len"]
 
-    # garante colunas
     for c in cat_cols:
         if c not in data.columns:
             data[c] = "NA"
     for c in num_cols:
         if c not in data.columns:
             data[c] = 0
+    if text_col not in data.columns:
+        data[text_col] = data["PRODUTO"].astype(str).apply(normalize_text)
 
     X = data[[text_col] + cat_cols + num_cols]
 
@@ -451,9 +432,8 @@ def train_price_model(d: pd.DataFrame):
 
     pipe = Pipeline(steps=[("prep", preproc), ("model", model)])
 
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.18, random_state=42)
-
     try:
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.18, random_state=42)
         pipe.fit(X_train, y_train)
         pred = pipe.predict(X_test)
         mae = float(mean_absolute_error(y_test, pred))
@@ -465,7 +445,6 @@ def train_price_model(d: pd.DataFrame):
     try:
         data["Preco_Previsto"] = pipe.predict(X)
         data["Delta_Preco"] = data["Preco_Num"] - data["Preco_Previsto"]
-        # faixa simples usando erro absoluto médio como banda
         data["Faixa_Min"] = np.maximum(0.0, data["Preco_Previsto"] - mae)
         data["Faixa_Max"] = data["Preco_Previsto"] + mae
     except:
@@ -474,40 +453,59 @@ def train_price_model(d: pd.DataFrame):
         data["Faixa_Min"] = np.nan
         data["Faixa_Max"] = np.nan
 
-    metrics = {"MAE": mae, "R2": r2}
+    metrics = {"MAE": mae, "R2": r2, "MIN_SAMPLES": int(min_samples), "TRAIN_ROWS": int(len(data))}
     return pipe, metrics, data
 
 
-price_model, price_metrics, df_enriched = train_price_model(df_enriched)
+def apply_price_model(model_pipe, d: pd.DataFrame):
+    """
+    Aplica o modelo no filtro atual (mesmo se tiver poucos itens).
+    """
+    if model_pipe is None or d is None or d.empty:
+        return d
+
+    data = d.copy()
+    text_col = "PRODUTO_NORM"
+    cat_cols = ["FONTE", "Logistica", "CATEGORIA"]
+    num_cols = ["Dias_Producao", "size_num", "premium", "is_kit", "is_personalizado", "word_count", "title_len"]
+
+    for c in cat_cols:
+        if c not in data.columns:
+            data[c] = "NA"
+    for c in num_cols:
+        if c not in data.columns:
+            data[c] = 0
+    if text_col not in data.columns:
+        data[text_col] = data["PRODUTO"].astype(str).apply(normalize_text)
+
+    X = data[[text_col] + cat_cols + num_cols]
+    try:
+        data["Preco_Previsto"] = model_pipe.predict(X)
+    except:
+        return d
+
+    # Se o modelo foi treinado no total, a banda/MAE fica salva em price_metrics (usamos depois na UI).
+    return data
+
 
 # -----------------------------------------
-# NOVO: SHAP / EXPLAIN (ADD-ON)
+# SHAP (OPCIONAL)
 # -----------------------------------------
 def try_shap_explain(model_pipe, df_sample: pd.DataFrame):
-    """
-    Tenta gerar importância (SHAP se disponível).
-    Se shap não estiver instalado, retorna None.
-    """
     if model_pipe is None or df_sample is None or df_sample.empty:
         return None
 
     try:
         import shap
 
-        # pega um sample pequeno
         sample = df_sample.sample(min(250, len(df_sample)), random_state=42)
 
-        text_col = "PRODUTO_NORM"
-        cat_cols = ["FONTE", "Logistica", "CATEGORIA"]
         num_cols = ["Dias_Producao", "size_num", "premium", "is_kit", "is_personalizado", "word_count", "title_len"]
-
-        Xs = sample[[text_col] + cat_cols + num_cols].copy()
-
-        # transforma e usa explainer baseado em árvore/hgb (fallback: KernelExplainer seria pesado demais)
-        # shap não lida perfeitamente com Pipeline + sparse; então gera explicação aproximada só para numéricas
-        # e devolve uma "tabela executiva"
+        for c in num_cols:
+            if c not in sample.columns:
+                sample[c] = 0
         num_only = sample[num_cols].astype(float)
-        # explainer rápido no modelo interno se possível
+
         try:
             inner_model = model_pipe.named_steps["model"]
             explainer = shap.Explainer(inner_model, num_only)
@@ -515,25 +513,16 @@ def try_shap_explain(model_pipe, df_sample: pd.DataFrame):
             imp = np.abs(sv.values).mean(axis=0)
             return pd.DataFrame({"feature": num_cols, "importance": imp}).sort_values("importance", ascending=False)
         except:
-            # fallback: importance por permutation no conjunto de teste (leve)
             return None
-
     except:
         return None
 
 
 # -----------------------------------------
-# NOVO: GAP FINDER / OPORTUNIDADES (ADD-ON)
+# GAP FINDER
 # -----------------------------------------
 @st.cache_data(ttl=300)
 def gap_finder(d: pd.DataFrame):
-    """
-    Encontra clusters promissores:
-      - preço alto
-      - baixa "competição" (poucos itens) no dataset
-      - logística favorável
-    Retorna tabela por cluster e exemplos.
-    """
     if d is None or d.empty:
         return pd.DataFrame()
 
@@ -545,14 +534,12 @@ def gap_finder(d: pd.DataFrame):
         fonte_div=("FONTE", lambda s: int(pd.Series(s).nunique())),
     ).reset_index()
 
-    # score simples (tuning na sidebar)
     g["score_base"] = (
         (g["ticket"] / (g["ticket"].median() + 1e-9)) * 0.55
         + (1.0 - (g["itens"] / (g["itens"].max() + 1e-9))) * 0.30
         + (g["flash_share"]) * 0.15
     )
 
-    # pega exemplos
     examples = []
     for _, row in g.sort_values("score_base", ascending=False).head(30).iterrows():
         cid = int(row["CLUSTER_MKT"])
@@ -569,23 +556,16 @@ def gap_finder(d: pd.DataFrame):
 
 
 # -----------------------------------------
-# NOVO: SIMULADOR DE OPERAÇÃO (ADD-ON)
+# SIMULADOR (lucro/hora)
 # -----------------------------------------
 def estimate_print_hours(row, base_hours=2.0):
-    """
-    Heurística: usa Dias_Producao e tamanho detectado.
-    Não é físico perfeito — é um proxy operacional para tomada de decisão.
-    """
     days = float(row.get("Dias_Producao", 15))
     size = float(row.get("size_num", 0))
-    # flash tende a ser item mais simples/rápido
     logist = str(row.get("Logistica", "📦 NORMAL"))
 
     h = base_hours
-    # tamanho influencia (se tiver)
     if size > 0:
-        h += min(6.0, size / 25.0)  # 25cm ~ +1h (proxy)
-    # dias de produção são um proxy de complexidade
+        h += min(6.0, size / 25.0)
     h += min(8.0, max(0.0, (days - 2.0)) / 6.0)
     if "FLASH" in logist:
         h *= 0.75
@@ -598,20 +578,18 @@ def compute_profit(d: pd.DataFrame, custo_hora=8.0, custo_grama=0.12, gramas_bas
         return d
 
     out = d.copy()
-    # massa proxy: cresce com size_num e premium/kit
-    size = out.get("size_num", pd.Series([0]*len(out))).fillna(0).astype(float)
-    kit = out.get("is_kit", pd.Series([0]*len(out))).fillna(0).astype(int)
-    prem = out.get("premium", pd.Series([0]*len(out))).fillna(0).astype(int)
+    size = out.get("size_num", pd.Series([0] * len(out))).fillna(0).astype(float)
+    kit = out.get("is_kit", pd.Series([0] * len(out))).fillna(0).astype(int)
+    prem = out.get("premium", pd.Series([0] * len(out))).fillna(0).astype(int)
 
     out["Gramagem_Estimada"] = (gramas_base + (size * 2.2) + (kit * 40) + (prem * 25)).clip(lower=20, upper=600)
-
     out["Horas_Estimadas"] = out.apply(lambda r: estimate_print_hours(r, base_hours=2.0), axis=1)
 
     out["Custo_Material"] = out["Gramagem_Estimada"] * float(custo_grama)
     out["Custo_Maquina"] = out["Horas_Estimadas"] * float(custo_hora)
     out["Custo_Embalagem"] = float(embalagem)
-
     out["Fee_Marketplace"] = out["Preco_Num"] * float(taxa_marketplace)
+
     out["Custo_Total_Estimado"] = (out["Custo_Material"] + out["Custo_Maquina"] + out["Custo_Embalagem"] + out["Fee_Marketplace"]) * (1.0 + float(taxa_falha))
     out["Lucro_Estimado"] = out["Preco_Num"] - out["Custo_Total_Estimado"]
     out["Lucro_por_Hora"] = out["Lucro_Estimado"] / (out["Horas_Estimadas"] + 1e-9)
@@ -620,79 +598,99 @@ def compute_profit(d: pd.DataFrame, custo_hora=8.0, custo_grama=0.12, gramas_bas
 
 
 # -----------------------------------------
-# NOVO: ALERTAS + MODO CEO (ADD-ON)
+# MODO CEO (resumo)
 # -----------------------------------------
-def format_brl(v: float) -> str:
-    try:
-        return f"R$ {float(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    except:
-        return "R$ 0,00"
-
-
 def build_ceo_summary(d: pd.DataFrame, gap: pd.DataFrame):
     if d is None or d.empty:
         return ["Sem dados para gerar decisões."]
 
     msgs = []
 
-    # 1) onde está dinheiro
     top_price = d.sort_values("Preco_Num", ascending=False).head(1)
     if len(top_price):
-        msgs.append(f"Maior ticket do dataset agora: **{format_brl(top_price['Preco_Num'].iloc[0])}** — {top_price['PRODUTO'].iloc[0]} ({top_price['FONTE'].iloc[0]}).")
+        msgs.append(f"Maior ticket no filtro: **{format_brl(top_price['Preco_Num'].iloc[0])}** — {top_price['PRODUTO'].iloc[0]} ({top_price['FONTE'].iloc[0]}).")
 
-    # 2) subprecificados (se modelo existir)
     if "Delta_Preco" in d.columns and d["Delta_Preco"].notna().any():
         under = d.sort_values("Delta_Preco", ascending=True).head(3)
         if len(under):
-            msgs.append("Top 3 prováveis **subprecificados** (preço abaixo do esperado):")
+            msgs.append("Top 3 prováveis **subprecificados** (abaixo do esperado):")
             for _, r in under.iterrows():
                 msgs.append(f"- {r['PRODUTO']} | real {format_brl(r['Preco_Num'])} vs esperado {format_brl(r.get('Preco_Previsto', 0))}")
 
         over = d.sort_values("Delta_Preco", ascending=False).head(3)
         if len(over):
-            msgs.append("Top 3 prováveis **caros demais** (preço acima do esperado):")
+            msgs.append("Top 3 prováveis **caros demais** (acima do esperado):")
             for _, r in over.iterrows():
                 msgs.append(f"- {r['PRODUTO']} | real {format_brl(r['Preco_Num'])} vs esperado {format_brl(r.get('Preco_Previsto', 0))}")
 
-    # 3) clusters promissores
     if gap is not None and not gap.empty:
         top = gap.head(3)
-        msgs.append("Top 3 **oportunidades por cluster** (alto ticket + baixa competição relativa + flash favorável):")
+        msgs.append("Top 3 **oportunidades por cluster** (alto ticket + baixa competição relativa + flash):")
         for _, r in top.iterrows():
             msgs.append(f"- **{r['CLUSTER_NOME']}** | score {r['score_base']:.2f} | ticket {format_brl(r['ticket'])} | itens {int(r['itens'])}")
-            exs = [r.get("EX1", ""), r.get("EX2", ""), r.get("EX3", "")]
-            exs = [e for e in exs if isinstance(e, str) and e.strip()]
-            if exs:
-                msgs.append(f"  exemplos: {exs[0]}{' | ' + exs[1] if len(exs)>1 else ''}{' | ' + exs[2] if len(exs)>2 else ''}")
 
-    # 4) anomalias
     if "is_anomaly" in d.columns and d["is_anomaly"].sum() > 0:
-        msgs.append(f"⚠️ Detectei **{int(d['is_anomaly'].sum())} anomalias** (preços fora do padrão local). Vale revisar na aba de alertas.")
+        msgs.append(f"⚠️ **{int(d['is_anomaly'].sum())} anomalias** detectadas no filtro. Veja a aba Alertas.")
 
     return msgs
 
 
-# --- SIDEBAR ---
+# ============================================================
+# PIPELINE GLOBAL (sem filtros): enrich + dedup + clusters + modelo
+# ============================================================
+df_enriched = enrich_df(df)
+df_enriched = canonicalize_products(df_enriched)
+df_enriched = market_clusters(df_enriched)
+
+# Treina no TOTAL pós-limpeza (importante!)
+price_model, price_metrics, df_enriched = train_price_model(df_enriched, min_samples=40)
+
+# ============================================================
+# UI
+# ============================================================
 st.sidebar.title("🎛️ Centro de Comando")
 
 if not df_enriched.empty:
-    # FILTRO DE PREÇO MANUAL (Para você ajustar fino)
+    # --- Saúde dos dados (NOVO) ---
+    st.sidebar.markdown("### ✅ Saúde dos Dados")
+
+    raw_total = df.attrs.get("rows_raw_total", "—")
+    after_price = df.attrs.get("rows_after_price_clean", "—")
+    valid_total = df.attrs.get("rows_after_filter_valid", "—")
+
+    st.sidebar.caption(f"Raw total: {raw_total} | Pós preço: {after_price} | Válidos: {valid_total}")
+
+    per_source = df.attrs.get("per_source", [])
+    if per_source:
+        psrc = pd.DataFrame(per_source)
+        if not psrc.empty:
+            # mostra um resumo enxuto por fonte
+            for _, r in psrc.iterrows():
+                st.sidebar.caption(f"{r['fonte']}: raw {int(r['raw'])} → válidos {int(r['validos'])}")
+
+    st.sidebar.metric("Itens válidos (TOTAL pós-limpeza)", int(len(df_enriched)))
+
+    # --- Filtros originais ---
+    st.sidebar.markdown("---")
     st.sidebar.markdown("### 🔍 Filtro de Ticket")
+
     max_val = float(df_enriched["Preco_Num"].max())
     preco_max = st.sidebar.slider("Teto de Preço (R$)", 0.0, max_val, min(500.0, max_val))
 
     fontes_sel = st.sidebar.multiselect("Fontes", df_enriched["FONTE"].unique(), default=df_enriched["FONTE"].unique())
 
     df_filtered = df_enriched[
-        (df_enriched["FONTE"].isin(fontes_sel))
-        & (df_enriched["Preco_Num"] <= preco_max)
+        (df_enriched["FONTE"].isin(fontes_sel)) &
+        (df_enriched["Preco_Num"] <= preco_max)
     ].copy()
 
     cats = st.sidebar.multiselect("Categorias", df_filtered["CATEGORIA"].unique())
     if cats:
         df_filtered = df_filtered[df_filtered["CATEGORIA"].isin(cats)].copy()
 
-    # Ajustes ML (novos)
+    st.sidebar.metric("Itens válidos (filtro atual)", int(len(df_filtered)))
+
+    # --- Ajustes ML ---
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 🧠 Ajustes de ML")
     n_clusters = st.sidebar.slider("Clusters de Mercado (aprox.)", 6, 40, 18)
@@ -700,14 +698,14 @@ if not df_enriched.empty:
     gap_weight_comp = st.sidebar.slider("Peso: Baixa Competição", 0.0, 1.0, 0.30)
     gap_weight_flash = st.sidebar.slider("Peso: Flash", 0.0, 1.0, 0.15)
 
-    # Re-cluster com o valor do slider (sem quebrar seu fluxo)
+    # re-cluster no filtro (rápido)
     @st.cache_data(ttl=300)
     def rerun_market_clusters(d, k):
         return market_clusters(d, n_clusters=k)
 
     df_filtered = rerun_market_clusters(df_filtered, n_clusters)
 
-    # Gap score recalculado com pesos
+    # Gap
     gap_df = gap_finder(df_filtered)
     if not gap_df.empty:
         gap_df["score_base"] = (
@@ -717,7 +715,15 @@ if not df_enriched.empty:
         )
         gap_df = gap_df.sort_values("score_base", ascending=False)
 
-    # --- LAYOUT ---
+    # Aplica modelo no filtro (MESMO SE FILTRO TIVER POUCOS ITENS)
+    df_filtered = apply_price_model(price_model, df_filtered)
+    if price_metrics and "Preco_Previsto" in df_filtered.columns:
+        mae_global = float(price_metrics["MAE"])
+        df_filtered["Delta_Preco"] = df_filtered["Preco_Num"] - df_filtered["Preco_Previsto"]
+        df_filtered["Faixa_Min"] = np.maximum(0.0, df_filtered["Preco_Previsto"] - mae_global)
+        df_filtered["Faixa_Max"] = df_filtered["Preco_Previsto"] + mae_global
+
+    # --- Layout / Tabs ---
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs([
         "📊 Visão Geral",
         "⚔️ Comparador",
@@ -733,7 +739,7 @@ if not df_enriched.empty:
         "📈 Forecast",
     ])
 
-    # 1. GERAL (SEU ORIGINAL)
+    # 1. GERAL (SEU ORIGINAL + CEO)
     with tab1:
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Total Produtos", len(df_filtered))
@@ -747,19 +753,14 @@ if not df_enriched.empty:
         st.markdown("---")
         col_g1, col_g2 = st.columns(2)
         with col_g1:
-            st.plotly_chart(
-                px.box(df_filtered, x="FONTE", y="Preco_Num", color="FONTE", title="Distribuição de Preços (Limpa)"),
-                use_container_width=True,
-            )
+            st.plotly_chart(px.box(df_filtered, x="FONTE", y="Preco_Num", color="FONTE", title="Distribuição de Preços (Limpa)"),
+                            use_container_width=True)
         with col_g2:
-            st.plotly_chart(
-                px.pie(df_filtered, names="CATEGORIA", title="Share de Categorias"),
-                use_container_width=True,
-            )
+            st.plotly_chart(px.pie(df_filtered, names="CATEGORIA", title="Share de Categorias"),
+                            use_container_width=True)
 
-        # NOVO: CEO SUMMARY (add-on)
         st.markdown("---")
-        st.subheader("🧠 Modo CEO — 3 decisões")
+        st.subheader("🧠 Modo CEO — decisões")
         ceo_msgs = build_ceo_summary(df_filtered, gap_df)
         for m in ceo_msgs[:12]:
             st.write(m)
@@ -792,17 +793,15 @@ if not df_enriched.empty:
                 fmt = f"R$ {media_local:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
                 cols_metrics[i].metric(f"Média {fonte}", fmt)
 
-            fig_comp = px.scatter(
-                df_comp, x="FONTE", y="Preco_Num", color="FONTE", size="Preco_Num",
-                hover_data=["PRODUTO"], title="Comparativo de Preços"
-            )
+            fig_comp = px.scatter(df_comp, x="FONTE", y="Preco_Num", color="FONTE", size="Preco_Num",
+                                  hover_data=["PRODUTO"], title="Comparativo de Preços")
             st.plotly_chart(fig_comp, use_container_width=True)
             st.dataframe(df_comp[["FONTE", "PRODUTO", "Preco_Num", "LINK"]], hide_index=True, use_container_width=True)
         else:
             if not mostrar_tudo:
                 st.info("Busque um produto acima.")
 
-    # 3. NUVENS (SEU ORIGINAL)
+    # 3. NUVENS (SEU ORIGINAL + diagnóstico rápido)
     with tab3:
         st.subheader("Nuvens de Inteligência")
 
@@ -830,9 +829,7 @@ if not df_enriched.empty:
                 palavras = str(row["PRODUTO"]).lower().split()
                 for p in palavras:
                     if p not in sw and len(p) > 3:
-                        if p not in word_prices:
-                            word_prices[p] = []
-                        word_prices[p].append(float(row["Preco_Num"]))
+                        word_prices.setdefault(p, []).append(float(row["Preco_Num"]))
 
             if word_prices:
                 avg_prices = {k: sum(v) / len(v) for k, v in word_prices.items() if len(v) > 1}
@@ -845,17 +842,17 @@ if not df_enriched.empty:
                 else:
                     st.warning("Dados insuficientes.")
 
-        # NOVO: visão IA rápida (add-on)
         st.markdown("---")
         st.subheader("🔎 Diagnóstico ML (rápido)")
-        cA, cB, cC, cD = st.columns(4)
-        cA.metric("Grupos (dedup) KMeans", int(df_filtered["GROUP_ID"].nunique()) if "GROUP_ID" in df_filtered.columns else 0)
-        cB.metric("Clusters Mercado", int(df_filtered["CLUSTER_MKT"].nunique()) if "CLUSTER_MKT" in df_filtered.columns else 0)
-        cC.metric("Anomalias", int(df_filtered["is_anomaly"].sum()) if "is_anomaly" in df_filtered.columns else 0)
+        dA, dB, dC, dD = st.columns(4)
+        dA.metric("Itens válidos (filtro)", int(len(df_filtered)))
+        dB.metric("Clusters Mercado (filtro)", int(df_filtered["CLUSTER_MKT"].nunique()) if "CLUSTER_MKT" in df_filtered.columns else 0)
+        dC.metric("Anomalias (filtro)", int(df_filtered["is_anomaly"].sum()) if "is_anomaly" in df_filtered.columns else 0)
         if price_metrics:
-            cD.metric("Modelo Preço (MAE)", format_brl(price_metrics["MAE"]))
+            dD.metric("Modelo Preço (MAE global)", format_brl(price_metrics["MAE"]))
+            st.caption(f"Treinado no TOTAL com {price_metrics['TRAIN_ROWS']} itens (mínimo exigido: {price_metrics['MIN_SAMPLES']}).")
         else:
-            cD.metric("Modelo Preço", "Sem treino (poucos dados)")
+            dD.metric("Modelo Preço", "Sem treino (dados totais insuficientes)")
 
     # 4. LAB (SEU ORIGINAL)
     with tab4:
@@ -873,7 +870,7 @@ if not df_enriched.empty:
         elif tp == "Boxplot":
             st.plotly_chart(px.box(df_filtered, x=cx, y=cy, color="FONTE"), use_container_width=True)
 
-    # 5. CRIADOR (SEU ORIGINAL)
+    # 5. CRIADOR (SEU ORIGINAL + SEO valioso)
     with tab5:
         st.header("Gerador de Títulos SEO")
         keyword = st.text_input("Produto:", "Vaso")
@@ -888,7 +885,6 @@ if not df_enriched.empty:
             else:
                 st.warning("Sem dados.")
 
-        # NOVO: SEO valioso (add-on)
         st.markdown("---")
         st.subheader("🧠 SEO valioso (frequente x caro)")
         if not df_filtered.empty:
@@ -896,15 +892,15 @@ if not df_enriched.empty:
             tfidf = TfidfVectorizer(max_features=2500, ngram_range=(1, 2), min_df=2, max_df=0.95)
             X = tfidf.fit_transform(txt_all)
             vocab = np.array(tfidf.get_feature_names_out())
-            # valor: TF-IDF ponderado por preço
             prices = df_filtered["Preco_Num"].astype(float).values.reshape(-1, 1)
             score = (X.multiply(prices)).mean(axis=0)
             score = np.asarray(score).ravel()
             top_idx = score.argsort()[-15:][::-1]
             top_terms = [(vocab[i], float(score[i])) for i in top_idx if score[i] > 0]
             if top_terms:
-                st.write("Termos com maior valor agregado (proxy):")
                 st.dataframe(pd.DataFrame(top_terms, columns=["termo", "score_valor_proxy"]), hide_index=True, use_container_width=True)
+            else:
+                st.info("Poucos dados para SEO valioso nesse filtro.")
         else:
             st.info("Sem dados no filtro atual.")
 
@@ -912,7 +908,7 @@ if not df_enriched.empty:
     with tab6:
         st.dataframe(df_filtered, use_container_width=True)
 
-    # 7. MERCADO & CLUSTERS (NOVO)
+    # 7. MERCADO & CLUSTERS
     with tab7:
         st.header("🧩 Mercado & Clusters")
 
@@ -923,8 +919,6 @@ if not df_enriched.empty:
         c4.metric("Vectorização", df_filtered.attrs.get("mkt_vectorizer", "auto"))
 
         st.markdown("---")
-
-        # tabela por cluster
         cluster_table = df_filtered.groupby(["CLUSTER_MKT", "CLUSTER_NOME"], dropna=False).agg(
             itens=("PRODUTO", "count"),
             ticket=("Preco_Num", "mean"),
@@ -945,7 +939,6 @@ if not df_enriched.empty:
         )
 
         st.markdown("---")
-        st.subheader("Visualizações")
         colA, colB = st.columns(2)
         with colA:
             st.plotly_chart(
@@ -977,7 +970,6 @@ if not df_enriched.empty:
         if gap_df is not None and not gap_df.empty:
             show_gap = gap_df.head(25).copy()
             show_gap["ticket_fmt"] = show_gap["ticket"].apply(format_brl)
-            show_gap["mediana_fmt"] = show_gap["mediana"].apply(format_brl)
             show_gap["flash_%"] = (show_gap["flash_share"] * 100).round(1)
             st.dataframe(
                 show_gap[["CLUSTER_MKT", "CLUSTER_NOME", "score_base", "itens", "ticket_fmt", "flash_%", "EX1", "EX2", "EX3"]],
@@ -987,58 +979,70 @@ if not df_enriched.empty:
         else:
             st.info("Sem dados suficientes para gap finder no filtro atual.")
 
-    # 8. PRECIFICAÇÃO ML (NOVO)
+    # 8. PRECIFICAÇÃO ML
     with tab8:
         st.header("💸 Precificação ML")
 
+        # Mostra contagem e critério de treino (NOVO, pra você nunca ficar no escuro)
+        st.caption(f"Itens válidos TOTAL pós-limpeza: {len(df_enriched)} | "
+                   f"mínimo para treinar: {price_metrics['MIN_SAMPLES'] if price_metrics else 40}")
+
         if price_model is None or price_metrics is None or "Preco_Previsto" not in df_filtered.columns:
-            st.warning("Modelo de preço não treinou (provável: poucos dados no filtro atual). Tente aumentar o teto de preço ou remover filtros.")
+            st.warning("Modelo de preço não está ativo. Se o TOTAL pós-limpeza for menor que o mínimo, ele não treina.")
         else:
-            c1, c2, c3 = st.columns(3)
-            c1.metric("MAE (erro médio)", format_brl(price_metrics["MAE"]))
-            c2.metric("R²", f"{price_metrics['R2']:.3f}")
-            c3.metric("Amostras no filtro", len(df_filtered))
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("MAE (global)", format_brl(price_metrics["MAE"]))
+            c2.metric("R² (global)", f"{price_metrics['R2']:.3f}")
+            c3.metric("Treino (linhas)", int(price_metrics["TRAIN_ROWS"]))
+            c4.metric("Filtro (linhas)", int(len(df_filtered)))
 
             st.markdown("---")
-            st.subheader("Mapa: Real vs Esperado")
+            st.subheader("Mapa: Real vs Esperado (no filtro)")
             fig = px.scatter(
                 df_filtered,
                 x="Preco_Previsto",
                 y="Preco_Num",
                 color="FONTE",
                 hover_data=["PRODUTO", "CATEGORIA", "Logistica"],
-                title="Real vs Esperado (pontos acima: caros; abaixo: baratos)",
+                title="Real vs Esperado (acima: caros; abaixo: baratos)",
             )
-            fig.add_shape(type="line", x0=df_filtered["Preco_Previsto"].min(), y0=df_filtered["Preco_Previsto"].min(),
-                          x1=df_filtered["Preco_Previsto"].max(), y1=df_filtered["Preco_Previsto"].max())
+            try:
+                mn = float(min(df_filtered["Preco_Previsto"].min(), df_filtered["Preco_Num"].min()))
+                mx = float(max(df_filtered["Preco_Previsto"].max(), df_filtered["Preco_Num"].max()))
+                fig.add_shape(type="line", x0=mn, y0=mn, x1=mx, y1=mx)
+            except:
+                pass
             st.plotly_chart(fig, use_container_width=True)
 
             st.markdown("---")
-            st.subheader("Subprecificados / Caros demais (top 20)")
-            colA, colB = st.columns(2)
-            with colA:
+            st.subheader("Subprecificados / Caros demais (Top 20)")
+            colL, colR = st.columns(2)
+
+            with colL:
                 under = df_filtered.sort_values("Delta_Preco", ascending=True).head(20).copy()
                 under["real"] = under["Preco_Num"].apply(format_brl)
                 under["esperado"] = under["Preco_Previsto"].apply(format_brl)
+                under["faixa"] = under.apply(lambda r: f"{format_brl(r['Faixa_Min'])} ~ {format_brl(r['Faixa_Max'])}", axis=1)
                 st.caption("⬇️ Abaixo do esperado")
-                st.dataframe(under[["FONTE", "PRODUTO", "real", "esperado", "LINK"]], hide_index=True, use_container_width=True)
-            with colB:
+                st.dataframe(under[["FONTE", "PRODUTO", "real", "esperado", "faixa", "LINK"]], hide_index=True, use_container_width=True)
+
+            with colR:
                 over = df_filtered.sort_values("Delta_Preco", ascending=False).head(20).copy()
                 over["real"] = over["Preco_Num"].apply(format_brl)
                 over["esperado"] = over["Preco_Previsto"].apply(format_brl)
+                over["faixa"] = over.apply(lambda r: f"{format_brl(r['Faixa_Min'])} ~ {format_brl(r['Faixa_Max'])}", axis=1)
                 st.caption("⬆️ Acima do esperado")
-                st.dataframe(over[["FONTE", "PRODUTO", "real", "esperado", "LINK"]], hide_index=True, use_container_width=True)
+                st.dataframe(over[["FONTE", "PRODUTO", "real", "esperado", "faixa", "LINK"]], hide_index=True, use_container_width=True)
 
             st.markdown("---")
-            st.subheader("Explicabilidade (SHAP / fallback)")
+            st.subheader("Explicabilidade (SHAP / opcional)")
             shap_df = try_shap_explain(price_model, df_filtered)
             if shap_df is not None and not shap_df.empty:
-                st.write("Importância média (aprox.) nas features numéricas:")
                 st.dataframe(shap_df, hide_index=True, use_container_width=True)
             else:
-                st.info("SHAP não disponível (ou não conseguiu explicar o pipeline). Se você instalar `shap`, esse painel fica mais poderoso.")
+                st.info("SHAP não disponível (ou não conseguiu explicar o pipeline). Se instalar `shap`, este painel melhora.")
 
-    # 9. ALERTAS (NOVO)
+    # 9. ALERTAS
     with tab9:
         st.header("🚨 Alertas & Anomalias")
 
@@ -1046,7 +1050,7 @@ if not df_enriched.empty:
             anom = df_filtered[df_filtered["is_anomaly"] == 1].copy()
             c1, c2, c3 = st.columns(3)
             c1.metric("Anomalias detectadas", int(len(anom)))
-            c2.metric("Anomalias (%)", f"{(len(anom)/max(1,len(df_filtered))*100):.1f}%")
+            c2.metric("Anomalias (%)", f"{(len(anom) / max(1, len(df_filtered)) * 100):.1f}%")
             c3.metric("Maior anomalia (preço)", format_brl(anom["Preco_Num"].max()) if len(anom) else "R$ 0,00")
 
             st.markdown("---")
@@ -1059,8 +1063,7 @@ if not df_enriched.empty:
             st.info("Sem colunas de anomalia (algo impediu o cálculo).")
 
         st.markdown("---")
-        st.subheader("Alertas de distribuição")
-        # alertas simples por fonte
+        st.subheader("Alertas de distribuição por fonte")
         if not df_filtered.empty:
             by_source = df_filtered.groupby("FONTE").agg(
                 itens=("PRODUTO", "count"),
@@ -1070,15 +1073,14 @@ if not df_enriched.empty:
             ).reset_index()
             by_source["ticket_fmt"] = by_source["ticket"].apply(format_brl)
             by_source["p90_fmt"] = by_source["p90"].apply(format_brl)
-            st.dataframe(by_source[["FONTE", "itens", "ticket_fmt", "p90_fmt"]], hide_index=True, use_container_width=True)
 
+            st.dataframe(by_source[["FONTE", "itens", "ticket_fmt", "p90_fmt"]], hide_index=True, use_container_width=True)
             st.plotly_chart(px.bar(by_source, x="FONTE", y="p90", title="P90 de preço por fonte (sinal de teto)"), use_container_width=True)
 
-    # 10. SIMULADOR (NOVO)
+    # 10. SIMULADOR
     with tab10:
         st.header("🏭 Simulador Operacional (Lucro / Hora)")
-
-        st.caption("Isso é um simulador paramétrico para decisões. Você ajusta custos e ele ranqueia onde sua impressora rende mais.")
+        st.caption("Simulador paramétrico para decisão (FDM). Ajuste custos e priorize o que paga a impressora mais rápido.")
 
         col1, col2, col3, col4, col5, col6 = st.columns(6)
         custo_hora = col1.number_input("Custo/hora máquina (R$)", min_value=0.0, value=8.0, step=0.5)
@@ -1111,7 +1113,8 @@ if not df_enriched.empty:
         top["Lucro"] = top["Lucro_Estimado"].apply(format_brl)
         top["Lucro/H"] = top["Lucro_por_Hora"].apply(format_brl)
         top["Preço"] = top["Preco_Num"].apply(format_brl)
-        st.dataframe(top[["FONTE", "PRODUTO", "Preço", "Lucro", "Lucro/H", "Horas_Estimadas", "Gramagem_Estimada", "LINK"]], hide_index=True, use_container_width=True)
+        st.dataframe(top[["FONTE", "PRODUTO", "Preço", "Lucro", "Lucro/H", "Horas_Estimadas", "Gramagem_Estimada", "LINK"]],
+                     hide_index=True, use_container_width=True)
 
         st.markdown("---")
         st.subheader("Lucro por cluster (priorização)")
@@ -1125,23 +1128,14 @@ if not df_enriched.empty:
         cl["preco_fmt"] = cl["preco_medio"].apply(format_brl)
         st.dataframe(cl[["CLUSTER_NOME", "itens", "preco_fmt", "lucro_h_fmt"]], hide_index=True, use_container_width=True)
 
-    # 11. RECOMENDADOR (NOVO)
+    # 11. RECOMENDADOR
     with tab11:
         st.header("🧭 Recomendador (o que listar / produzir)")
+        st.caption("Combina: Gap Finder + preço esperado (se ativo) + flash + (opcional) penaliza anomalia.")
 
-        st.caption("Combina: Gap Finder + preço esperado (se existir) + flash + lucro/hora (se você usar o simulador).")
-
-        # base do recomendador
         base = df_filtered.copy()
-
-        # se modelo de preço existe, usa delta
         has_price = ("Delta_Preco" in base.columns) and base["Delta_Preco"].notna().any()
 
-        # score
-        # - favorece clusters com alto score_base
-        # - favorece itens subprecificados (delta negativo)
-        # - favorece flash
-        # - penaliza anomalias
         cluster_score_map = {}
         if gap_df is not None and not gap_df.empty:
             cluster_score_map = dict(zip(gap_df["CLUSTER_MKT"].astype(int), gap_df["score_base"].astype(float)))
@@ -1151,9 +1145,7 @@ if not df_enriched.empty:
         base["anom_penalty"] = base.get("is_anomaly", 0).astype(int)
 
         if has_price:
-            # quanto mais negativo, melhor (subprecificado)
             base["under_score"] = (-base["Delta_Preco"]).clip(lower=0)
-            # normaliza
             base["under_score"] = base["under_score"] / (base["under_score"].max() + 1e-9)
         else:
             base["under_score"] = 0.0
@@ -1167,7 +1159,6 @@ if not df_enriched.empty:
 
         rec = base.sort_values("score_rec", ascending=False).head(40).copy()
 
-        st.subheader("Backlog recomendado (Top 40)")
         cols = ["score_rec", "CLUSTER_NOME", "FONTE", "PRODUTO", "Preco_Num", "Logistica", "LINK"]
         if has_price:
             cols += ["Preco_Previsto", "Faixa_Min", "Faixa_Max", "Delta_Preco"]
@@ -1194,15 +1185,13 @@ if not df_enriched.empty:
             pals = [p for p in re.findall(r"\w+", txt.lower()) if p not in sw and len(p) > 2]
             top_terms = [x[0] for x in Counter(pals).most_common(8)]
             st.write("Termos frequentes no cluster:", ", ".join(top_terms[:8]))
-            # template simples
             st.code(f"[Produto Principal] 3D | {pick_cluster} | {top_terms[0] if top_terms else ''} {top_terms[1] if len(top_terms)>1 else ''} | Pronta Entrega / Personalizado")
 
-    # 12. FORECAST (NOVO)
+    # 12. FORECAST
     with tab12:
         st.header("📈 Forecast (se houver data no dataset)")
-        st.caption("Se sua planilha tiver coluna de data/hora, aqui entra previsão e sazonalidade. Sem data, fica em modo 'placeholder inteligente'.")
+        st.caption("Se sua planilha tiver coluna de data/hora, aqui entra previsão real. Sem data, mostra aviso.")
 
-        # detecta coluna de data
         date_col = None
         for c in df.columns:
             if any(k in c.upper() for k in ["DATA", "DATE", "DIA", "HORA", "TIMESTAMP"]):
@@ -1226,17 +1215,11 @@ if not df_enriched.empty:
                     st.subheader("Série: ticket médio diário")
                     st.plotly_chart(px.line(ts, x="dia", y="Preco_Num", title="Ticket médio diário (observado)"), use_container_width=True)
 
-                    # forecast simples: média móvel + tendência
                     st.subheader("Previsão (proxy): média móvel + tendência linear")
                     ts = ts.sort_values("dia")
                     ts["mm7"] = ts["Preco_Num"].rolling(7, min_periods=3).mean()
-                    # tendência
-                    x = np.arange(len(ts)).reshape(-1, 1)
-                    y = ts["Preco_Num"].values
-                    # regressão linear simples
-                    coef = np.polyfit(np.arange(len(ts)), y, deg=1)
-                    trend = coef[0] * np.arange(len(ts)) + coef[1]
-                    ts["trend"] = trend
+                    coef = np.polyfit(np.arange(len(ts)), ts["Preco_Num"].values, deg=1)
+                    ts["trend"] = coef[0] * np.arange(len(ts)) + coef[1]
 
                     fig = go.Figure()
                     fig.add_trace(go.Scatter(x=ts["dia"], y=ts["Preco_Num"], mode="lines+markers", name="observado"))
@@ -1244,7 +1227,6 @@ if not df_enriched.empty:
                     fig.add_trace(go.Scatter(x=ts["dia"], y=ts["trend"], mode="lines", name="tendência"))
                     fig.update_layout(title="Ticket: observado vs suavização vs tendência")
                     st.plotly_chart(fig, use_container_width=True)
-
             except Exception as e:
                 st.warning(f"Não consegui gerar forecast: {e}")
 
