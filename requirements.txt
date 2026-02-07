@@ -9,6 +9,8 @@ nltk
 thefuzz
 python-levenshtein
 streamlit-plotly-events
+google-genai
+
 
 # extras para "tudo" (com fallback no código se não carregar)
 sentence-transformers
