@@ -17,7 +17,7 @@ st.set_page_config(page_title="BCRUZ 3D Enterprise", layout="wide", page_icon="�
 URL_ELO7 = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRtLCFvhbktUToSC6XCCtsEk-Fats-FqW8Nv_fG9AG_8fWfu7pMIFq7Zo0m0oS37r0coiqQyn9ZWc0F/pub?gid=1574041650&single=true&output=csv"
 URL_SHOPEE = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRtLCFvhbktUToSC6XCCtsEk-Fats-FqW8Nv_fG9AG_8fWfu7pMIFq7Zo0m0oS37r0coiqQyn9ZWc0F/pub?gid=307441420&single=true&output=csv"
 
-# --- LIMPEZA DE PREÇO (SÓ ISSO QUE EU MEXI PARA NÃO TRAVAR) ---
+# --- LIMPEZA DE PREÇO ---
 def limpar_preco(valor):
     if pd.isna(valor) or str(valor).strip() == "": return 0.0
     if isinstance(valor, (int, float)): return float(valor)
@@ -31,7 +31,6 @@ def limpar_preco(valor):
 @st.cache_data(ttl=60)
 def carregar_dados():
     dfs = []
-    logs = []
     fontes = [{"url": URL_ELO7, "nome": "Elo7"}, {"url": URL_SHOPEE, "nome": "Shopee"}]
 
     for f in fontes:
@@ -41,7 +40,7 @@ def carregar_dados():
             
             if temp_df.empty: continue
 
-            # Mapeamento
+            # Mapeamento Inteligente de Colunas
             col_prod = next((c for c in temp_df.columns if any(x in c for x in ["PRODUT", "NOME", "TITULO"])), "PRODUTO")
             col_preco = next((c for c in temp_df.columns if any(x in c for x in ["(R$)", "PREÇO", "PRICE"])), None)
             col_cat = next((c for c in temp_df.columns if "CATEG" in c), None)
@@ -92,13 +91,13 @@ if not df.empty:
     cats = st.sidebar.multiselect("Categorias", df_filtered['CATEGORIA'].unique())
     if cats: df_filtered = df_filtered[df_filtered['CATEGORIA'].isin(cats)]
 
-    # --- ABAS (AQUI ESTÁ A ORDEM QUE VOCÊ QUER) ---
+    # --- ABAS ---
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "📊 Visão Geral", 
-        "⚔️ Comparador",  # <--- SEU CÓDIGO RESTAURADO AQUI
+        "⚔️ Comparador", 
         "🧠 IA & Insights", 
         "🧪 Laboratório", 
-        "💡 CRIADOR DE ANÚNCIOS", # <--- MANTIDO COMO PEDIU
+        "💡 CRIADOR DE ANÚNCIOS", 
         "📂 Dados"
     ])
 
@@ -114,12 +113,9 @@ if not df.empty:
         with col_g1: st.plotly_chart(px.box(df_filtered, x="FONTE", y="Preco_Num", color="FONTE", points="all"), use_container_width=True)
         with col_g2: st.plotly_chart(px.pie(df_filtered, names='CATEGORIA'), use_container_width=True)
 
-    # ---------------------------------------------------------
-    # 2. COMPARADOR (RESTAURADO DO SEU CÓDIGO ORIGINAL)
-    # ---------------------------------------------------------
+    # 2. COMPARADOR
     with tab2:
         st.header("⚔️ Comparador Cross-Platform")
-        
         col_input, col_check = st.columns([3, 1])
         with col_input:
             termo = st.text_input("Buscar Produto (Filtro por Nome):", placeholder="Ex: Vaso, Robert, Suporte...")
@@ -135,29 +131,25 @@ if not df.empty:
             st.success(f"Mostrando todos os {len(df_comp)} produtos da base.")
         elif termo:
             prods = df_filtered['PRODUTO'].unique()
-            # SEU PARÂMETRO: Limit 50, Ratio, > 40
             matches = process.extract(termo, prods, limit=50, scorer=fuzz.token_set_ratio)
             similares = [x[0] for x in matches if x[1] > 40] 
             df_comp = df_filtered[df_filtered['PRODUTO'].isin(similares)]
         
         if not df_comp.empty:
-            # SEU LAYOUT DE MÉTRICAS
             cols_metrics = st.columns(len(df_comp['FONTE'].unique()) + 1)
             for i, fonte in enumerate(df_comp['FONTE'].unique()):
                 media = df_comp[df_comp['FONTE']==fonte]['Preco_Num'].mean()
                 cols_metrics[i].metric(f"Média {fonte}", f"R$ {media:.2f}")
 
-            # SEU GRÁFICO
             fig_comp = px.scatter(df_comp, x="FONTE", y="Preco_Num", color="FONTE", size="Preco_Num", 
                                   hover_data=['PRODUTO'], title="Dispersão de Preços")
             st.plotly_chart(fig_comp, use_container_width=True)
-            
             st.dataframe(df_comp[['FONTE', 'PRODUTO', 'Preco_Num', 'LINK']], hide_index=True, use_container_width=True)
         else:
             if not mostrar_tudo:
-                st.info("Digite um termo acima ou marque 'Mostrar TUDO' para ver os dados.")
+                st.info("Digite um termo acima ou marque 'Mostrar TUDO'.")
 
-    # 3. IA
+    # 3. IA & INSIGHTS (AGORA COM 2 NUVENS)
     with tab3:
         st.subheader("Segmentação (K-Means)")
         if len(df_filtered) > 10:
@@ -166,14 +158,54 @@ if not df.empty:
             df_filtered['Cluster'] = kmeans.labels_
             st.plotly_chart(px.scatter(df_filtered, x="Dias_Producao", y="Preco_Num", color=df_filtered['Cluster'].astype(str)), use_container_width=True)
         
-        st.subheader("Nuvem de Palavras")
-        texto = " ".join(df_filtered['PRODUTO'].astype(str))
+        st.markdown("---")
+        
+        # PREPARAÇÃO DAS PALAVRAS
         sw = set(STOPWORDS)
-        sw.update(["de", "para", "3d", "pla", "com"])
+        sw.update(["de", "para", "3d", "pla", "com", "o", "a", "em", "do", "da", "kit", "un", "cm"])
+        
+        # --- NUVEM 1: FREQUÊNCIA (VOLUME) ---
+        st.subheader("☁️ 1. O que mais aparece? (Volume)")
+        texto_geral = " ".join(df_filtered['PRODUTO'].astype(str))
         try:
-            wc = WordCloud(width=600, height=300, background_color='white', stopwords=sw).generate(texto)
-            fig_wc, ax = plt.subplots(); ax.imshow(wc); ax.axis("off"); st.pyplot(fig_wc)
-        except: st.write("Texto insuficiente.")
+            wc1 = WordCloud(width=800, height=300, background_color='white', stopwords=sw, colormap='Blues').generate(texto_geral)
+            fig_wc1, ax1 = plt.subplots(figsize=(10, 4))
+            ax1.imshow(wc1, interpolation='bilinear')
+            ax1.axis("off")
+            st.pyplot(fig_wc1)
+        except:
+            st.warning("Dados insuficientes para nuvem de frequência.")
+
+        st.markdown("---")
+
+        # --- NUVEM 2: PREÇO (TICKET MÉDIO) ---
+        st.subheader("💰 2. Onde está o dinheiro? (Ticket Médio Alto)")
+        st.markdown("*Palavras maiores = Produtos mais caros na média.*")
+        
+        # Lógica de Peso por Preço
+        word_prices = {}
+        for index, row in df_filtered.iterrows():
+            preco = row['Preco_Num']
+            palavras = str(row['PRODUTO']).lower().split()
+            for p in palavras:
+                if p not in sw and len(p) > 3: # Filtra palavras curtas
+                    if p not in word_prices: word_prices[p] = []
+                    word_prices[p].append(preco)
+        
+        # Média de preço por palavra
+        if word_prices:
+            avg_prices = {k: sum(v)/len(v) for k, v in word_prices.items() if len(v) > 1} # Pelo menos 2 aparições para evitar ruído
+            
+            if avg_prices:
+                wc2 = WordCloud(width=800, height=350, background_color='#111111', colormap='viridis', max_words=60).generate_from_frequencies(avg_prices)
+                fig_wc2, ax2 = plt.subplots(figsize=(10, 4))
+                ax2.imshow(wc2, interpolation='bilinear')
+                ax2.axis("off")
+                st.pyplot(fig_wc2)
+            else:
+                st.warning("Não há palavras repetidas suficientes para calcular média de preço.")
+        else:
+            st.warning("Dados insuficientes para nuvem de preço.")
 
     # 4. LABORATÓRIO
     with tab4:
@@ -185,7 +217,7 @@ if not df.empty:
         elif tp == "Dispersão": st.plotly_chart(px.scatter(df_filtered, x=cx, y=cy, color="FONTE"), use_container_width=True)
         elif tp == "Boxplot": st.plotly_chart(px.box(df_filtered, x=cx, y=cy, color="FONTE"), use_container_width=True)
 
-    # 5. CRIADOR DE ANÚNCIOS (A MÁGICA SALVA)
+    # 5. CRIADOR DE ANÚNCIOS
     with tab5:
         st.header("💡 IA: Gerador de Títulos Vencedores")
         keyword = st.text_input("Produto Foco (Ex: Suporte Fone):", "Vaso")
@@ -206,4 +238,4 @@ if not df.empty:
     with tab6: st.dataframe(df_filtered, use_container_width=True)
 
 else:
-    st.error("⚠️ Planilhas vazias ou inacessíveis.")
+    st.error("⚠️ Planilhas vazias ou inacessíveis. Verifique os Links do Google Sheets.")
