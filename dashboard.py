@@ -30,6 +30,20 @@ from sklearn.neighbors import LocalOutlierFactor
 from sklearn.decomposition import TruncatedSVD
 from sklearn.linear_model import Ridge
 
+import streamlit as st
+
+st.set_page_config(page_title="Teste Gemini API", layout="wide")
+
+try:
+    from google import genai
+    key = st.secrets.get("AIzaSyCoyLLuZfzzbgkCm0sPondxSfURPZqPf94")
+    client = genai.Client(api_key=key)
+    resp = client.models.generate_content(model="gemini-1.5", contents="Teste de conexão Gemini API")
+    st.write("✅ Gemini API respondeu com:", resp.text[:200])
+except Exception as e:
+    st.write("❌ Erro ao conectar com Gemini API:", e)
+
+
 # -----------------------------
 # 1) CONFIG
 # -----------------------------
