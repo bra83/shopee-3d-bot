@@ -8,3 +8,8 @@ numpy
 nltk
 thefuzz
 python-levenshtein
+
+# extras para "tudo" (com fallback no código se não carregar)
+sentence-transformers
+torch
+shap
