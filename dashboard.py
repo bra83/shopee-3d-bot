@@ -259,7 +259,7 @@ def carregar_dados():
                 continue
 
             col_prod = next((c for c in temp_df.columns if any(x in c for x in ["PRODUT", "NOME", "TITULO"])), "PRODUTO")
-            col_preco = next((c for c in temp_df.columns if any(x in c for x in ["(R$)", "PREÇO", "PRECO", "PRICE"])), None)
+            col_preco = next((c for c in temp_df.columns if any(x in c for x in ["(R$)", "PRECO", "PRECO", "PRICE"])), None)
             col_cat = next((c for c in temp_df.columns if "CATEG" in c), None)
             col_link = next((c for c in temp_df.columns if "LINK" in c or "URL" in c), None)
             col_prazo = next((c for c in temp_df.columns if "PRAZO" in c or "FLASH" in c), None)
@@ -434,10 +434,8 @@ def market_clusters(d, n_clusters=18):
             top_terms = [vocab[i] for i in top_idx if mean_vec[i] > 0]
             names[cid] = " / ".join(top_terms) if top_terms else f"cluster {cid}"
         out["CLUSTER_NOME"] = out["CLUSTER_MKT"].map(names).fillna(out["CLUSTER_MKT"].astype(str))
-        out["CLUSTER_TERMS"] = out["CLUSTER_MKT"].map(names).fillna(out["CLUSTER_MKT"].astype(str))
     except Exception:
         out["CLUSTER_NOME"] = out["CLUSTER_MKT"].astype(str)
-    out["CLUSTER_TERMS"] = out["CLUSTER_NOME"]
 
     out.attrs["mkt_vectorizer"] = vec_name
     out.attrs["mkt_k"] = int(out["CLUSTER_MKT"].nunique())
@@ -604,96 +602,6 @@ def apply_price_models(df_in, global_model, cluster_models, global_mae=None):
 # GAP FINDER
 # -----------------------------
 @st.cache_data(ttl=600)
-
-# -----------------------------
-# SCORES (cluster-level)
-# -----------------------------
-def compute_cluster_scores_fdm(df_in, w_ticket=0.45, w_low_comp=0.35, w_flash=0.10, w_anom=0.10):
-    """
-    FDM-tuned opportunity score for clusters.
-    Radar for investigation, not profit.
-    """
-    if df_in is None or df_in.empty or "CLUSTER_MKT" not in df_in.columns:
-        return pd.DataFrame()
-
-    t = df_in.groupby(["CLUSTER_MKT", "CLUSTER_NOME"], dropna=False).agg(
-        items=("PRODUTO", "count"),
-        avg_price=("Preco_Num", "mean"),
-        med_price=("Preco_Num", "median"),
-        flash_share=("Logistica", lambda s: float((pd.Series(s) == "FLASH").mean())),
-        source_div=("FONTE", lambda s: int(pd.Series(s).nunique())),
-    ).reset_index()
-
-    if "is_anomaly" in df_in.columns:
-        an = df_in.groupby(["CLUSTER_MKT", "CLUSTER_NOME"], dropna=False)["is_anomaly"].mean().reset_index(name="anom_share")
-        t = t.merge(an, on=["CLUSTER_MKT", "CLUSTER_NOME"], how="left")
-    else:
-        t["anom_share"] = 0.0
-
-    def norm01(x):
-        x = pd.Series(x).astype(float)
-        lo = float(x.quantile(0.10))
-        hi = float(x.quantile(0.90))
-        if hi - lo < 1e-9:
-            return pd.Series([0.5] * len(x))
-        return ((x.clip(lo, hi) - lo) / (hi - lo)).fillna(0.0)
-
-    ticket_n = norm01(t["avg_price"])
-    low_comp_n = 1.0 - norm01(t["items"])
-    flash_n = t["flash_share"].fillna(0.0).clip(0, 1)
-    anom_pen = t["anom_share"].fillna(0.0).clip(0, 1)
-
-    t["score_fdm"] = (
-        ticket_n * float(w_ticket)
-        + low_comp_n * float(w_low_comp)
-        + flash_n * float(w_flash)
-        - anom_pen * float(w_anom)
-    )
-    return t.sort_values("score_fdm", ascending=False)
-
-
-def compute_cluster_scores_profit(df_in, custo_hora=8.0, custo_grama=0.12, gramas_base=60, taxa_falha=0.06, taxa_marketplace=0.14, embalagem=4.0):
-    """
-    Profit/hour-focused score (cluster level).
-    Uses simulator assumptions.
-    """
-    if df_in is None or df_in.empty or "CLUSTER_MKT" not in df_in.columns:
-        return pd.DataFrame()
-
-    sim = compute_profit(
-        df_in,
-        custo_hora=custo_hora,
-        custo_grama=custo_grama,
-        gramas_base=gramas_base,
-        taxa_falha=taxa_falha,
-        taxa_marketplace=taxa_marketplace,
-        embalagem=embalagem,
-    )
-    if sim is None or sim.empty or "Lucro_por_Hora" not in sim.columns:
-        return pd.DataFrame()
-
-    t = sim.groupby(["CLUSTER_MKT", "CLUSTER_NOME"], dropna=False).agg(
-        items=("PRODUTO", "count"),
-        avg_price=("Preco_Num", "mean"),
-        avg_profit_h=("Lucro_por_Hora", "mean"),
-        med_profit_h=("Lucro_por_Hora", "median"),
-        pct_negative=("Lucro_Estimado", lambda s: float((pd.Series(s) < 0).mean())),
-        flash_share=("Logistica", lambda s: float((pd.Series(s) == "FLASH").mean())),
-    ).reset_index()
-
-    x = t["avg_profit_h"].astype(float)
-    lo = float(x.quantile(0.10))
-    hi = float(x.quantile(0.90))
-    if hi - lo < 1e-9:
-        t["score_profit"] = 0.5
-    else:
-        t["score_profit"] = ((x.clip(lo, hi) - lo) / (hi - lo)).fillna(0.0)
-
-    t["score_profit"] = (t["score_profit"] * (1.0 - t["pct_negative"].fillna(0.0).clip(0, 1))).clip(0, 1)
-    return t.sort_values("score_profit", ascending=False)
-
-
-
 def gap_finder(d):
     if d is None or d.empty or "CLUSTER_MKT" not in d.columns:
         return pd.DataFrame()
@@ -1076,7 +984,88 @@ with tabs[5]:
 # -----------------------------
 # TAB 7 MARKET CLUSTERS
 # -----------------------------
-with tabs[13]:
+
+# -----------------------------
+# DATA ANALYSIS (stats + qualitative + quantitative)
+# -----------------------------
+with tabs[6]:
+    st.subheader("Data Analysis")
+    st.caption("Statistical, quantitative and qualitative analysis of the current filter.")
+
+    if df_filtered is None or df_filtered.empty:
+        st.info("No data in current filter.")
+    else:
+        st.markdown("### Summary statistics (current filter)")
+        s = df_filtered["Preco_Num"].astype(float)
+        desc = s.describe(percentiles=[0.1, 0.25, 0.5, 0.75, 0.9]).to_frame().T
+        desc["mean_fmt"] = desc["mean"].apply(format_brl)
+        desc["p50_fmt"] = desc["50%"].apply(format_brl)
+        desc["min_fmt"] = desc["min"].apply(format_brl)
+        desc["max_fmt"] = desc["max"].apply(format_brl)
+        st.dataframe(desc[["count", "mean_fmt", "p50_fmt", "min_fmt", "max_fmt"]], hide_index=True, use_container_width=True)
+
+        st.markdown("### By source")
+        by_source = df_filtered.groupby("FONTE").agg(
+            items=("PRODUTO", "count"),
+            avg_price=("Preco_Num", "mean"),
+            med_price=("Preco_Num", "median"),
+            p90=("Preco_Num", lambda x: float(pd.Series(x).quantile(0.90))),
+            flash_share=("Logistica", lambda x: float((pd.Series(x) == "FLASH").mean())),
+        ).reset_index()
+        by_source["avg_fmt"] = by_source["avg_price"].apply(format_brl)
+        by_source["med_fmt"] = by_source["med_price"].apply(format_brl)
+        by_source["p90_fmt"] = by_source["p90"].apply(format_brl)
+        by_source["flash_pct"] = (by_source["flash_share"] * 100).round(1)
+        st.dataframe(by_source[["FONTE", "items", "avg_fmt", "med_fmt", "p90_fmt", "flash_pct"]], hide_index=True, use_container_width=True)
+        st.plotly_chart(
+            px.bar(by_source, x="FONTE", y="avg_price", color="FONTE", color_discrete_map=COLOR_MAP, title="Average price by source"),
+            use_container_width=True,
+        )
+
+        st.markdown("### By category (top 25)")
+        by_cat = df_filtered.groupby("CATEGORIA").agg(
+            items=("PRODUTO", "count"),
+            avg_price=("Preco_Num", "mean"),
+            med_price=("Preco_Num", "median"),
+        ).reset_index().sort_values(["items", "avg_price"], ascending=False).head(25)
+        by_cat["avg_fmt"] = by_cat["avg_price"].apply(format_brl)
+        st.dataframe(by_cat[["CATEGORIA", "items", "avg_fmt"]], hide_index=True, use_container_width=True)
+        st.plotly_chart(
+            px.scatter(by_cat, x="items", y="avg_price", size="items", hover_data=["CATEGORIA"], title="Category: items vs average price"),
+            use_container_width=True,
+        )
+
+        st.markdown("### Qualitative: frequent terms in titles")
+        txt_all = " ".join(df_filtered["PRODUTO_NORM"].fillna("").astype(str).tolist())
+        words = [w for w in re.findall(r"\w+", txt_all.lower()) if len(w) >= 4]
+        top_words = Counter(words).most_common(30)
+        st.dataframe(pd.DataFrame(top_words, columns=["term", "count"]), hide_index=True, use_container_width=True)
+
+        st.markdown("### Extremes (price)")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.caption("Top 15 most expensive")
+            hi = df_filtered.sort_values("Preco_Num", ascending=False).head(15).copy()
+            hi["price"] = hi["Preco_Num"].apply(format_brl)
+            st.dataframe(hi[["FONTE", "PRODUTO", "price", "CATEGORIA", "LINK"]], hide_index=True, use_container_width=True)
+        with c2:
+            st.caption("Top 15 cheapest")
+            lo = df_filtered.sort_values("Preco_Num", ascending=True).head(15).copy()
+            lo["price"] = lo["Preco_Num"].apply(format_brl)
+            st.dataframe(lo[["FONTE", "PRODUTO", "price", "CATEGORIA", "LINK"]], hide_index=True, use_container_width=True)
+
+        if ai_available():
+            with st.expander("AI summary of this analysis"):
+                if st.button("Generate AI summary", key="ai_data_analysis"):
+                    prompt = "You are a senior data analyst for a small FDM 3D print business.\n"
+                    prompt += "Summarize key insights from the current filter dataset: pricing, categories, sources, and opportunities.\n"
+                    prompt += "Provide 6 bullet points and 3 actions.\n"
+                    prompt += "Summary stats: " + str(desc.to_dict("records")) + "\n"
+                    prompt += "By source: " + str(by_source.to_dict("records")) + "\n"
+                    prompt += "Top terms: " + str(top_words[:15]) + "\n"
+                    st.write(ai_ask(prompt))
+
+with tabs[7]:
     st.subheader("Market Clusters")
     if "CLUSTER_MKT" not in df_filtered.columns:
         st.info("No cluster info.")
@@ -1121,7 +1110,156 @@ with tabs[13]:
 # -----------------------------
 # TAB 8 PRICING ML
 # -----------------------------
-with tabs[13]:
+
+# -----------------------------
+# SCORE (explain + calculations + FDM weights + profit/hour score)
+# -----------------------------
+with tabs[8]:
+    st.subheader("Score (meaning and calculation)")
+
+    st.markdown("### Why cluster names look like 'mario / kit / festa'?")
+    st.write(
+        "Cluster names are created automatically from the most frequent and distinctive words (TF-IDF) in product titles. "
+        "So 'mario / kit / festa' means those words often appear together in that cluster's titles. "
+        "It is a label for the pattern, not a recommendation to copy licensed IP."
+    )
+
+    st.markdown("### FDM opportunity score (radar)")
+    st.write(
+        "This score ranks clusters for investigation using: avg price (value), low competition inside the cluster, "
+        "FLASH share (urgency), and an anomaly penalty."
+    )
+
+    # FDM default weights (balanced for time + value): ticket 0.45, low-competition 0.35, flash 0.10, anomalies 0.10
+    col1, col2, col3, col4 = st.columns(4)
+    w_ticket = col1.slider("Weight: ticket", 0.0, 1.0, 0.45, 0.05)
+    w_comp = col2.slider("Weight: low competition", 0.0, 1.0, 0.35, 0.05)
+    w_flash = col3.slider("Weight: flash/urgency", 0.0, 1.0, 0.10, 0.05)
+    w_anom = col4.slider("Penalty: anomalies", 0.0, 1.0, 0.10, 0.05)
+
+    # Compute per-cluster metrics
+    if "is_anomaly" not in df_filtered.columns:
+        df_filtered["is_anomaly"] = 0
+
+    cl = df_filtered.groupby(["CLUSTER_MKT", "CLUSTER_NOME"], dropna=False).agg(
+        items=("PRODUTO", "count"),
+        avg_price=("Preco_Num", "mean"),
+        med_price=("Preco_Num", "median"),
+        flash_share=("Logistica", lambda x: float((pd.Series(x) == "FLASH").mean())),
+        anom_share=("is_anomaly", "mean"),
+    ).reset_index()
+
+    def norm01(x):
+        x = pd.Series(x).astype(float)
+        lo = float(x.quantile(0.10))
+        hi = float(x.quantile(0.90))
+        if hi - lo < 1e-9:
+            return pd.Series([0.5] * len(x))
+        return ((x.clip(lo, hi) - lo) / (hi - lo)).fillna(0.0)
+
+    ticket_n = norm01(cl["avg_price"])
+    low_comp_n = 1.0 - norm01(cl["items"])
+    flash_n = cl["flash_share"].fillna(0.0).clip(0, 1)
+    anom_pen = cl["anom_share"].fillna(0.0).clip(0, 1)
+
+    cl["score_fdm"] = (
+        ticket_n * float(w_ticket)
+        + low_comp_n * float(w_comp)
+        + flash_n * float(w_flash)
+        - anom_pen * float(w_anom)
+    )
+
+    cl = cl.sort_values("score_fdm", ascending=False)
+    show = cl.head(30).copy()
+    show["avg_price_fmt"] = show["avg_price"].apply(format_brl)
+    show["flash_pct"] = (show["flash_share"] * 100).round(1)
+    show["anom_pct"] = (show["anom_share"] * 100).round(1)
+
+    st.dataframe(
+        show[["CLUSTER_MKT", "CLUSTER_NOME", "items", "avg_price_fmt", "flash_pct", "anom_pct", "score_fdm"]],
+        hide_index=True,
+        use_container_width=True,
+    )
+    st.plotly_chart(
+        px.bar(show.sort_values("score_fdm"), x="score_fdm", y="CLUSTER_NOME", orientation="h", title="Top clusters by FDM score"),
+        use_container_width=True,
+    )
+
+    st.markdown("---")
+    st.markdown("### Alternative score: profit/hour")
+    st.write("Uses simulator assumptions to estimate profit/hour and ranks clusters by average profit/hour.")
+
+    a, b, c, d, e, f = st.columns(6)
+    custo_hora = a.number_input("Cost/hour (BRL)", min_value=0.0, value=8.0, step=0.5, key="score_cost_hour")
+    custo_grama = b.number_input("Cost/gram (BRL)", min_value=0.0, value=0.12, step=0.01, format="%.2f", key="score_cost_g")
+    gramas_base = c.number_input("Base grams", min_value=10, value=60, step=5, key="score_base_g")
+    taxa_falha = d.number_input("Failure rate", min_value=0.0, max_value=0.5, value=0.06, step=0.01, format="%.2f", key="score_fail")
+    taxa_market = e.number_input("Marketplace fee", min_value=0.0, max_value=0.5, value=0.14, step=0.01, format="%.2f", key="score_fee")
+    embalagem = f.number_input("Packaging (BRL)", min_value=0.0, value=4.0, step=0.5, key="score_pack")
+
+    sim = compute_profit(
+        df_filtered,
+        custo_hora=custo_hora,
+        custo_grama=custo_grama,
+        gramas_base=gramas_base,
+        taxa_falha=taxa_falha,
+        taxa_marketplace=taxa_market,
+        embalagem=embalagem,
+    )
+
+    if sim is None or sim.empty or "Lucro_por_Hora" not in sim.columns:
+        st.info("Not enough data to compute profit/hour score.")
+    else:
+        clp = sim.groupby(["CLUSTER_MKT", "CLUSTER_NOME"], dropna=False).agg(
+            items=("PRODUTO", "count"),
+            avg_price=("Preco_Num", "mean"),
+            avg_profit_h=("Lucro_por_Hora", "mean"),
+            pct_negative=("Lucro_Estimado", lambda s: float((pd.Series(s) < 0).mean())),
+            flash_share=("Logistica", lambda x: float((pd.Series(x) == "FLASH").mean())),
+        ).reset_index()
+
+        x = clp["avg_profit_h"].astype(float)
+        lo = float(x.quantile(0.10))
+        hi = float(x.quantile(0.90))
+        if hi - lo < 1e-9:
+            clp["score_profit"] = 0.5
+        else:
+            clp["score_profit"] = ((x.clip(lo, hi) - lo) / (hi - lo)).fillna(0.0)
+        clp["score_profit"] = (clp["score_profit"] * (1.0 - clp["pct_negative"].fillna(0.0).clip(0, 1))).clip(0, 1)
+
+        clp = clp.sort_values("score_profit", ascending=False)
+        sp = clp.head(30).copy()
+        sp["avg_price_fmt"] = sp["avg_price"].apply(format_brl)
+        sp["avg_profit_h_fmt"] = sp["avg_profit_h"].apply(format_brl)
+        sp["neg_pct"] = (sp["pct_negative"] * 100).round(1)
+        st.dataframe(
+            sp[["CLUSTER_MKT", "CLUSTER_NOME", "items", "avg_price_fmt", "avg_profit_h_fmt", "neg_pct", "score_profit"]],
+            hide_index=True,
+            use_container_width=True,
+        )
+        st.plotly_chart(
+            px.bar(sp.sort_values("score_profit"), x="score_profit", y="CLUSTER_NOME", orientation="h", title="Top clusters by profit/hour score"),
+            use_container_width=True,
+        )
+
+    if ai_available():
+        with st.expander("AI: explain a cluster"):
+            clusters = sorted(df_filtered["CLUSTER_NOME"].unique().tolist())
+            pickc = st.selectbox("Pick a cluster", clusters, key="ai_score_cluster")
+            if st.button("Explain", key="ai_score_btn"):
+                sub = df_filtered[df_filtered["CLUSTER_NOME"] == pickc].copy()
+                summ = {
+                    "cluster": pickc,
+                    "n": int(len(sub)),
+                    "avg_price": float(sub["Preco_Num"].mean()) if len(sub) else 0.0,
+                    "flash_share": float((sub["Logistica"] == "FLASH").mean()) if len(sub) else 0.0,
+                }
+                prompt = "Explain this cluster pattern for an FDM 3D print seller.\n"
+                prompt += "Cluster summary: " + str(summ) + "\n"
+                prompt += "Give 3 product angles that do NOT require licensed IP.\n"
+                st.write(ai_ask(prompt))
+
+with tabs[9]:
     st.subheader("Pricing ML")
 
     if global_metrics is None or "Preco_Previsto" not in df_filtered.columns:
@@ -1176,7 +1314,7 @@ with tabs[13]:
 # -----------------------------
 # TAB 9 ALERTS
 # -----------------------------
-with tabs[12]:
+with tabs[10]:
     st.subheader("Alerts and anomalies")
     if "is_anomaly" in df_filtered.columns:
         anom = df_filtered[df_filtered["is_anomaly"] == 1].copy()
@@ -1195,7 +1333,7 @@ with tabs[12]:
 # -----------------------------
 # TAB 10 SIMULATOR
 # -----------------------------
-with tabs[13]:
+with tabs[11]:
     st.subheader("Operational simulator (profit per hour)")
     st.caption("Parametric simulator for FDM decisions. Adjust costs and rank best use of machine time.")
 
