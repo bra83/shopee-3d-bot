@@ -434,8 +434,10 @@ def market_clusters(d, n_clusters=18):
             top_terms = [vocab[i] for i in top_idx if mean_vec[i] > 0]
             names[cid] = " / ".join(top_terms) if top_terms else f"cluster {cid}"
         out["CLUSTER_NOME"] = out["CLUSTER_MKT"].map(names).fillna(out["CLUSTER_MKT"].astype(str))
+        out["CLUSTER_TERMS"] = out["CLUSTER_MKT"].map(names).fillna(out["CLUSTER_MKT"].astype(str))
     except Exception:
         out["CLUSTER_NOME"] = out["CLUSTER_MKT"].astype(str)
+    out["CLUSTER_TERMS"] = out["CLUSTER_NOME"]
 
     out.attrs["mkt_vectorizer"] = vec_name
     out.attrs["mkt_k"] = int(out["CLUSTER_MKT"].nunique())
@@ -602,6 +604,96 @@ def apply_price_models(df_in, global_model, cluster_models, global_mae=None):
 # GAP FINDER
 # -----------------------------
 @st.cache_data(ttl=600)
+
+# -----------------------------
+# SCORES (cluster-level)
+# -----------------------------
+def compute_cluster_scores_fdm(df_in, w_ticket=0.45, w_low_comp=0.35, w_flash=0.10, w_anom=0.10):
+    """
+    FDM-tuned opportunity score for clusters.
+    Radar for investigation, not profit.
+    """
+    if df_in is None or df_in.empty or "CLUSTER_MKT" not in df_in.columns:
+        return pd.DataFrame()
+
+    t = df_in.groupby(["CLUSTER_MKT", "CLUSTER_NOME"], dropna=False).agg(
+        items=("PRODUTO", "count"),
+        avg_price=("Preco_Num", "mean"),
+        med_price=("Preco_Num", "median"),
+        flash_share=("Logistica", lambda s: float((pd.Series(s) == "FLASH").mean())),
+        source_div=("FONTE", lambda s: int(pd.Series(s).nunique())),
+    ).reset_index()
+
+    if "is_anomaly" in df_in.columns:
+        an = df_in.groupby(["CLUSTER_MKT", "CLUSTER_NOME"], dropna=False)["is_anomaly"].mean().reset_index(name="anom_share")
+        t = t.merge(an, on=["CLUSTER_MKT", "CLUSTER_NOME"], how="left")
+    else:
+        t["anom_share"] = 0.0
+
+    def norm01(x):
+        x = pd.Series(x).astype(float)
+        lo = float(x.quantile(0.10))
+        hi = float(x.quantile(0.90))
+        if hi - lo < 1e-9:
+            return pd.Series([0.5] * len(x))
+        return ((x.clip(lo, hi) - lo) / (hi - lo)).fillna(0.0)
+
+    ticket_n = norm01(t["avg_price"])
+    low_comp_n = 1.0 - norm01(t["items"])
+    flash_n = t["flash_share"].fillna(0.0).clip(0, 1)
+    anom_pen = t["anom_share"].fillna(0.0).clip(0, 1)
+
+    t["score_fdm"] = (
+        ticket_n * float(w_ticket)
+        + low_comp_n * float(w_low_comp)
+        + flash_n * float(w_flash)
+        - anom_pen * float(w_anom)
+    )
+    return t.sort_values("score_fdm", ascending=False)
+
+
+def compute_cluster_scores_profit(df_in, custo_hora=8.0, custo_grama=0.12, gramas_base=60, taxa_falha=0.06, taxa_marketplace=0.14, embalagem=4.0):
+    """
+    Profit/hour-focused score (cluster level).
+    Uses simulator assumptions.
+    """
+    if df_in is None or df_in.empty or "CLUSTER_MKT" not in df_in.columns:
+        return pd.DataFrame()
+
+    sim = compute_profit(
+        df_in,
+        custo_hora=custo_hora,
+        custo_grama=custo_grama,
+        gramas_base=gramas_base,
+        taxa_falha=taxa_falha,
+        taxa_marketplace=taxa_marketplace,
+        embalagem=embalagem,
+    )
+    if sim is None or sim.empty or "Lucro_por_Hora" not in sim.columns:
+        return pd.DataFrame()
+
+    t = sim.groupby(["CLUSTER_MKT", "CLUSTER_NOME"], dropna=False).agg(
+        items=("PRODUTO", "count"),
+        avg_price=("Preco_Num", "mean"),
+        avg_profit_h=("Lucro_por_Hora", "mean"),
+        med_profit_h=("Lucro_por_Hora", "median"),
+        pct_negative=("Lucro_Estimado", lambda s: float((pd.Series(s) < 0).mean())),
+        flash_share=("Logistica", lambda s: float((pd.Series(s) == "FLASH").mean())),
+    ).reset_index()
+
+    x = t["avg_profit_h"].astype(float)
+    lo = float(x.quantile(0.10))
+    hi = float(x.quantile(0.90))
+    if hi - lo < 1e-9:
+        t["score_profit"] = 0.5
+    else:
+        t["score_profit"] = ((x.clip(lo, hi) - lo) / (hi - lo)).fillna(0.0)
+
+    t["score_profit"] = (t["score_profit"] * (1.0 - t["pct_negative"].fillna(0.0).clip(0, 1))).clip(0, 1)
+    return t.sort_values("score_profit", ascending=False)
+
+
+
 def gap_finder(d):
     if d is None or d.empty or "CLUSTER_MKT" not in d.columns:
         return pd.DataFrame()
@@ -792,7 +884,9 @@ tabs = st.tabs([
     "Lab",
     "Title Builder",
     "Data",
+    "Data Analysis",
     "Market Clusters",
+    "Score",
     "Pricing ML",
     "Alerts",
     "Simulator",
@@ -982,7 +1076,7 @@ with tabs[5]:
 # -----------------------------
 # TAB 7 MARKET CLUSTERS
 # -----------------------------
-with tabs[6]:
+with tabs[13]:
     st.subheader("Market Clusters")
     if "CLUSTER_MKT" not in df_filtered.columns:
         st.info("No cluster info.")
@@ -1027,7 +1121,7 @@ with tabs[6]:
 # -----------------------------
 # TAB 8 PRICING ML
 # -----------------------------
-with tabs[7]:
+with tabs[13]:
     st.subheader("Pricing ML")
 
     if global_metrics is None or "Preco_Previsto" not in df_filtered.columns:
@@ -1082,7 +1176,7 @@ with tabs[7]:
 # -----------------------------
 # TAB 9 ALERTS
 # -----------------------------
-with tabs[8]:
+with tabs[12]:
     st.subheader("Alerts and anomalies")
     if "is_anomaly" in df_filtered.columns:
         anom = df_filtered[df_filtered["is_anomaly"] == 1].copy()
@@ -1101,7 +1195,7 @@ with tabs[8]:
 # -----------------------------
 # TAB 10 SIMULATOR
 # -----------------------------
-with tabs[9]:
+with tabs[13]:
     st.subheader("Operational simulator (profit per hour)")
     st.caption("Parametric simulator for FDM decisions. Adjust costs and rank best use of machine time.")
 
@@ -1141,7 +1235,7 @@ with tabs[9]:
 # -----------------------------
 # TAB 11 RECOMMENDER
 # -----------------------------
-with tabs[10]:
+with tabs[12]:
     st.subheader("Recommender (what to list / produce)")
     st.caption("Combines: Gap finder + underpricing + flash + anomaly penalty.")
 
@@ -1183,7 +1277,7 @@ with tabs[10]:
 # -----------------------------
 # TAB 12 FORECAST
 # -----------------------------
-with tabs[11]:
+with tabs[13]:
     st.subheader("Forecast (requires date column in CSV)")
     st.caption("If your CSV has a date/time column, this becomes a real time series. Otherwise, it shows a note.")
 
