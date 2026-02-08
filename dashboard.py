@@ -565,7 +565,7 @@ def apply_price_models(df_in, global_model, cluster_models, global_mae=None):
     if df_in is None or df_in.empty:
         return df_in
 
-    out = df_in.copy().reset_index(drop=True)
+    out = df_in.copy()
     pipe_tmp, (text_col, cat_cols, num_cols) = _build_price_pipeline()
     out = _ensure_price_cols(out, text_col, cat_cols, num_cols)
     X = out[[text_col] + cat_cols + num_cols]
@@ -578,7 +578,7 @@ def apply_price_models(df_in, global_model, cluster_models, global_mae=None):
             idx = list(idx)
             model = cluster_models.get(int(cid), None)
             if model is not None:
-                preds[idx] = model.predict(X.iloc[list(idx)])
+                preds[idx] = model.predict(X.iloc[idx])
     if global_model is not None:
         missing = np.isnan(preds)
         if missing.any():
@@ -843,6 +843,55 @@ with tabs[0]:
 # -----------------------------
 # TAB 2 COMPARATOR
 # -----------------------------
+
+        st.markdown("---")
+        st.subheader("☁️ Nuvens de Palavras (na página inicial)")
+        # Stopwords locais (sem depender de outras abas)
+        sw_local = set(STOPWORDS)
+        sw_local.update(["de", "para", "3d", "pla", "com", "o", "a", "em", "do", "da", "kit", "un", "cm", "mm", "peças", "pecas", "und", "unid"])
+
+        c_cloud1, c_cloud2 = st.columns(2)
+
+        with c_cloud1:
+            st.caption("📌 MAIS FREQUENTES (o que mais aparece nos títulos)")
+            texto_geral = " ".join(df_filtered["PRODUTO"].astype(str)) if "PRODUTO" in df_filtered.columns else ""
+            try:
+                if texto_geral.strip():
+                    wc1 = WordCloud(width=500, height=360, background_color="white", stopwords=sw_local).generate(texto_geral)
+                    fig1, ax1 = plt.subplots()
+                    ax1.imshow(wc1)
+                    ax1.axis("off")
+                    st.pyplot(fig1)
+                else:
+                    st.info("Sem texto suficiente para gerar a nuvem.")
+            except Exception as e:
+                st.warning(f"Não consegui gerar a nuvem: {e}")
+
+        with c_cloud2:
+            st.caption("💰 MAIOR VALOR (palavras associadas a preços mais altos)")
+            try:
+                word_prices = {}
+                if ("PRODUTO" in df_filtered.columns) and ("Preco_Num" in df_filtered.columns):
+                    for _, row in df_filtered.iterrows():
+                        palavras = str(row["PRODUTO"]).lower().split()
+                        for pz in palavras:
+                            if pz not in sw_local and len(pz) > 3:
+                                word_prices.setdefault(pz, []).append(float(row["Preco_Num"]))
+                if word_prices:
+                    avg_prices = {k: sum(v)/len(v) for k, v in word_prices.items() if len(v) > 1}
+                    if avg_prices:
+                        wc2 = WordCloud(width=500, height=360, background_color="white", max_words=60).generate_from_frequencies(avg_prices)
+                        fig2, ax2 = plt.subplots()
+                        ax2.imshow(wc2)
+                        ax2.axis("off")
+                        st.pyplot(fig2)
+                    else:
+                        st.info("Dados insuficientes para calcular valor por palavra.")
+                else:
+                    st.info("Sem dados suficientes para gerar a nuvem por valor.")
+            except Exception as e:
+                st.warning(f"Não consegui gerar a nuvem por valor: {e}")
+
 with tabs[1]:
     st.subheader("Price Comparator")
     col_input, col_check = st.columns([3, 1])
