@@ -565,7 +565,7 @@ def apply_price_models(df_in, global_model, cluster_models, global_mae=None):
     if df_in is None or df_in.empty:
         return df_in
 
-    out = df_in.copy()
+    out = df_in.copy().reset_index(drop=True)
     pipe_tmp, (text_col, cat_cols, num_cols) = _build_price_pipeline()
     out = _ensure_price_cols(out, text_col, cat_cols, num_cols)
     X = out[[text_col] + cat_cols + num_cols]
@@ -578,7 +578,7 @@ def apply_price_models(df_in, global_model, cluster_models, global_mae=None):
             idx = list(idx)
             model = cluster_models.get(int(cid), None)
             if model is not None:
-                preds[idx] = model.predict(X.iloc[idx])
+                preds[idx] = model.predict(X.iloc[list(idx)])
     if global_model is not None:
         missing = np.isnan(preds)
         if missing.any():
