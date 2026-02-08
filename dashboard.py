@@ -29,6 +29,16 @@ from sklearn.neighbors import LocalOutlierFactor
 from sklearn.decomposition import TruncatedSVD
 from sklearn.linear_model import Ridge
 
+# Optional visuals
+try:
+    from wordcloud import WordCloud, STOPWORDS
+    import matplotlib.pyplot as plt
+except Exception:
+    WordCloud = None
+    STOPWORDS = set()
+    plt = None
+
+
 
 # -----------------------------
 # CONFIG
@@ -828,6 +838,58 @@ with tabs[0]:
     with col_g2:
         fig = px.pie(df_filtered, names="CATEGORIA", title="Category share")
         st.plotly_chart(fig, use_container_width=True)
+
+
+    # Word clouds (frequency vs value-weighted)
+    st.markdown("---")
+    st.subheader("Word clouds")
+    if WordCloud is None or plt is None:
+        st.info("WordCloud/matplotlib not available. Add 'wordcloud' and 'matplotlib' to requirements.txt.")
+    elif df_filtered.empty:
+        st.info("No data in current filter.")
+    else:
+        sw_local = set(STOPWORDS) if isinstance(STOPWORDS, (set, frozenset)) else set()
+        sw_local.update([
+            "de","da","do","das","dos","para","com","sem","em","no","na","nos","nas",
+            "3d","pla","petg","abs","resina","kit","un","cm","mm","peca","pecas","novo","nova",
+            "personalizado","personalizada","pronta","entrega","imediato","imediata",
+        ])
+
+        cA, cB = st.columns(2)
+
+        with cA:
+            st.caption("Most frequent terms")
+            texto = " ".join(df_filtered["PRODUTO"].astype(str).tolist())
+            try:
+                wc = WordCloud(width=520, height=320, background_color="white", stopwords=sw_local, max_words=80).generate(texto)
+                fig_wc, ax_wc = plt.subplots()
+                ax_wc.imshow(wc)
+                ax_wc.axis("off")
+                st.pyplot(fig_wc)
+            except Exception as e:
+                st.warning(f"Could not render word cloud: {e}")
+
+        with cB:
+            st.caption("Higher value terms (avg price proxy)")
+            word_prices = {}
+            for _, row in df_filtered.iterrows():
+                words = re.findall(r"[a-zA-Z0-9_]+", str(row.get("PRODUTO","")).lower())
+                for w in words:
+                    if w in sw_local or len(w) < 4:
+                        continue
+                    word_prices.setdefault(w, []).append(float(row.get("Preco_Num", 0.0) or 0.0))
+            try:
+                avg_prices = {k: (sum(v)/len(v)) for k, v in word_prices.items() if len(v) >= 2}
+                if avg_prices:
+                    wc2 = WordCloud(width=520, height=320, background_color="white", stopwords=sw_local, max_words=80).generate_from_frequencies(avg_prices)
+                    fig_wc2, ax_wc2 = plt.subplots()
+                    ax_wc2.imshow(wc2)
+                    ax_wc2.axis("off")
+                    st.pyplot(fig_wc2)
+                else:
+                    st.info("Not enough repeated terms for value-weighted cloud.")
+            except Exception as e:
+                st.warning(f"Could not render value cloud: {e}")
 
     st.markdown("---")
     st.subheader("CEO Mode - decisions")
