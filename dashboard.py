@@ -574,7 +574,7 @@ def apply_price_models(df_in, global_model, cluster_models, global_mae=None):
     preds = np.full(len(out), np.nan, dtype=float)
 
     if "CLUSTER_MKT" in out.columns and cluster_models:
-        for cid, idx in out.groupby("CLUSTER_MKT").groups.itens():
+        for cid, idx in out.groupby("CLUSTER_MKT").groups.items():
             idx = list(idx)
             model = cluster_models.get(int(cid), None)
             if model is not None:
