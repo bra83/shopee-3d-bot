@@ -33,6 +33,13 @@ from sklearn.linear_model import Ridge
 # -----------------------------
 # CONFIG
 # -----------------------------
+
+# Fallback seguro para STOPWORDS
+try:
+    _STOPWORDS_FALLBACK = set(STOPWORDS)
+except Exception:
+    _STOPWORDS_FALLBACK = set()
+
 st.set_page_config(page_title="BCRUZ 3D Enterprise", layout="wide")
 
 COLOR_MAP = {
@@ -706,7 +713,7 @@ def build_ceo_summary(d, gap):
         top = gap.head(3)
         msgs.append("Top 3 cluster opportunities (high ticket + lower competition + flash):")
         for _, r in top.iterrows():
-            msgs.append("- " + str(r["CLUSTER_NOME"]) + " | score " + str(round(float(r["score_base"]), 2)) + " | ticket " + format_brl(r["ticket"]) + " | itens " + str(int(r["itens"])))
+            msgs.append("- " + str(r["CLUSTER_NOME"]) + " | score " + str(round(float(r["score_base"]), 2)) + " | ticket " + format_brl(r["ticket"]) + " | items " + str(int(r["itens"])))
 
     if "is_anomaly" in d.columns and int(d["is_anomaly"].sum()) > 0:
         msgs.append("Warning: " + str(int(d["is_anomaly"].sum())) + " anomalies detected in current filter. See Alerts tab.")
@@ -747,7 +754,7 @@ if per_source:
     for r in per_source:
         st.sidebar.caption(str(r.get("fonte")) + ": raw " + str(int(r.get("raw", 0))) + " -> valid " + str(int(r.get("validos", 0))))
 
-st.sidebar.metric("Valid itens (total after clean)", int(len(df_enriched)))
+st.sidebar.metric("Valid items (total after clean)", int(len(df_enriched)))
 
 # Filters
 st.sidebar.markdown("---")
@@ -762,7 +769,7 @@ cats = st.sidebar.multiselect("Categories", sorted(df_filtered["CATEGORIA"].uniq
 if cats:
     df_filtered = df_filtered[df_filtered["CATEGORIA"].isin(cats)].copy()
 
-st.sidebar.metric("Valid itens (current filter)", int(len(df_filtered)))
+st.sidebar.metric("Valid items (current filter)", int(len(df_filtered)))
 
 # Clusters slider
 st.sidebar.markdown("---")
@@ -786,20 +793,20 @@ df_filtered = apply_price_models(df_filtered, global_model, cluster_models, glob
 # TABS
 # ============================================================
 tabs = st.tabs([
-    "Visao Geral",
-    "Comparador",
-    "IA & Insights",
-    "Laboratorio",
-    "Criador de Titulos",
-    "Dados",
-    "Analise de Dados",
-    "Mercado & Clusters",
+    "Overview",
+    "Comparator",
+    "AI Insights",
+    "Lab",
+    "Title Builder",
+    "Data",
+    "Data Analysis",
+    "Market Clusters",
     "Score",
-    "Precificacao ML",
-    "Alertas",
-    "Simulador",
-    "Recomendador",
-    "Previsao",
+    "Pricing ML",
+    "Alerts",
+    "Simulator",
+    "Recommender",
+    "Forecast",
 ])
 
 # -----------------------------
@@ -810,7 +817,7 @@ with tabs[0]:
     c1.metric("Products", len(df_filtered))
     c2.metric("Avg ticket", format_brl(df_filtered["Preco_Num"].mean() if len(df_filtered) else 0))
     c3.metric("Sources", int(df_filtered["FONTE"].nunique()))
-    c4.metric("Flash itens", int((df_filtered["Logistica"] == "FLASH").sum()))
+    c4.metric("Flash items", int((df_filtered["Logistica"] == "FLASH").sum()))
 
     st.markdown("---")
     col_g1, col_g2 = st.columns(2)
@@ -832,7 +839,7 @@ with tabs[0]:
             if st.button("Ask AI about this filter", key="ai_overview"):
                 prompt = "You are a business analyst for FDM 3D printing. Summarize key decisions for this filter.\n"
                 prompt += "Stats:\n"
-                prompt += "- itens: " + str(len(df_filtered)) + "\n"
+                prompt += "- items: " + str(len(df_filtered)) + "\n"
                 prompt += "- avg_price: " + str(df_filtered["Preco_Num"].mean() if len(df_filtered) else 0) + "\n"
                 prompt += "- sources: " + ", ".join(sorted(df_filtered["FONTE"].unique().tolist())) + "\n"
                 if gap_df is not None and not gap_df.empty:
@@ -843,55 +850,6 @@ with tabs[0]:
 # -----------------------------
 # TAB 2 COMPARATOR
 # -----------------------------
-
-        st.markdown("---")
-        st.subheader("☁️ Nuvens de Palavras (na página inicial)")
-        # Stopwords locais (sem depender de outras abas)
-        sw_local = set(STOPWORDS)
-        sw_local.update(["de", "para", "3d", "pla", "com", "o", "a", "em", "do", "da", "kit", "un", "cm", "mm", "peças", "pecas", "und", "unid"])
-
-        c_cloud1, c_cloud2 = st.columns(2)
-
-        with c_cloud1:
-            st.caption("📌 MAIS FREQUENTES (o que mais aparece nos títulos)")
-            texto_geral = " ".join(df_filtered["PRODUTO"].astype(str)) if "PRODUTO" in df_filtered.columns else ""
-            try:
-                if texto_geral.strip():
-                    wc1 = WordCloud(width=500, height=360, background_color="white", stopwords=sw_local).generate(texto_geral)
-                    fig1, ax1 = plt.subplots()
-                    ax1.imshow(wc1)
-                    ax1.axis("off")
-                    st.pyplot(fig1)
-                else:
-                    st.info("Sem texto suficiente para gerar a nuvem.")
-            except Exception as e:
-                st.warning(f"Não consegui gerar a nuvem: {e}")
-
-        with c_cloud2:
-            st.caption("💰 MAIOR VALOR (palavras associadas a preços mais altos)")
-            try:
-                word_prices = {}
-                if ("PRODUTO" in df_filtered.columns) and ("Preco_Num" in df_filtered.columns):
-                    for _, row in df_filtered.iterrows():
-                        palavras = str(row["PRODUTO"]).lower().split()
-                        for pz in palavras:
-                            if pz not in sw_local and len(pz) > 3:
-                                word_prices.setdefault(pz, []).append(float(row["Preco_Num"]))
-                if word_prices:
-                    avg_prices = {k: sum(v)/len(v) for k, v in word_prices.items() if len(v) > 1}
-                    if avg_prices:
-                        wc2 = WordCloud(width=500, height=360, background_color="white", max_words=60).generate_from_frequencies(avg_prices)
-                        fig2, ax2 = plt.subplots()
-                        ax2.imshow(wc2)
-                        ax2.axis("off")
-                        st.pyplot(fig2)
-                    else:
-                        st.info("Dados insuficientes para calcular valor por palavra.")
-                else:
-                    st.info("Sem dados suficientes para gerar a nuvem por valor.")
-            except Exception as e:
-                st.warning(f"Não consegui gerar a nuvem por valor: {e}")
-
 with tabs[1]:
     st.subheader("Price Comparator")
     col_input, col_check = st.columns([3, 1])
@@ -943,7 +901,7 @@ with tabs[2]:
                     prompt += "Row: " + str(r) + "\n"
                     st.write(ai_ask(prompt))
             else:
-                st.info("No itens in current filter.")
+                st.info("No items in current filter.")
 
         with colB:
             st.markdown("Explain a cluster")
@@ -986,7 +944,7 @@ with tabs[2]:
 # TAB 4 LAB
 # -----------------------------
 with tabs[3]:
-    st.subheader("Laboratorio")
+    st.subheader("Lab")
     c1, c2, c3 = st.columns(3)
     with c1:
         cx = st.selectbox("X axis", df_filtered.columns.tolist())
@@ -1023,7 +981,7 @@ with tabs[4]:
 # TAB 6 DATA (with search)
 # -----------------------------
 with tabs[5]:
-    st.subheader("Dados")
+    st.subheader("Data")
     q = st.text_input("Search in table", "")
     view = df_filtered.copy()
     if q.strip():
@@ -1038,13 +996,13 @@ with tabs[5]:
 # DATA ANALYSIS (stats + qualitative + quantitative)
 # -----------------------------
 with tabs[6]:
-    st.subheader("Analise de Dados")
+    st.subheader("Data Analysis")
     st.caption("Statistical, quantitative and qualitative analysis of the current filter.")
 
     if df_filtered is None or df_filtered.empty:
         st.info("No data in current filter.")
     else:
-        st.markdown("### Estatisticas resumo (current filter)")
+        st.markdown("### Summary statistics (current filter)")
         s = df_filtered["Preco_Num"].astype(float)
         desc = s.describe(percentiles=[0.1, 0.25, 0.5, 0.75, 0.9]).to_frame().T
         desc["mean_fmt"] = desc["mean"].apply(format_brl)
@@ -1053,9 +1011,9 @@ with tabs[6]:
         desc["max_fmt"] = desc["max"].apply(format_brl)
         st.dataframe(desc[["count", "mean_fmt", "p50_fmt", "min_fmt", "max_fmt"]], hide_index=True, use_container_width=True)
 
-        st.markdown("### Por fonte")
+        st.markdown("### By source")
         by_source = df_filtered.groupby("FONTE").agg(
-            itens=("PRODUTO", "count"),
+            items=("PRODUTO", "count"),
             avg_price=("Preco_Num", "mean"),
             med_price=("Preco_Num", "median"),
             p90=("Preco_Num", lambda x: float(pd.Series(x).quantile(0.90))),
@@ -1065,22 +1023,22 @@ with tabs[6]:
         by_source["med_fmt"] = by_source["med_price"].apply(format_brl)
         by_source["p90_fmt"] = by_source["p90"].apply(format_brl)
         by_source["flash_pct"] = (by_source["flash_share"] * 100).round(1)
-        st.dataframe(by_source[["FONTE", "itens", "avg_fmt", "med_fmt", "p90_fmt", "flash_pct"]], hide_index=True, use_container_width=True)
+        st.dataframe(by_source[["FONTE", "items", "avg_fmt", "med_fmt", "p90_fmt", "flash_pct"]], hide_index=True, use_container_width=True)
         st.plotly_chart(
-            px.bar(by_source, x="FONTE", y="avg_price", color="FONTE", color_discrete_map=COLOR_MAP, title="Preco medio by source"),
+            px.bar(by_source, x="FONTE", y="avg_price", color="FONTE", color_discrete_map=COLOR_MAP, title="Average price by source"),
             use_container_width=True,
         )
 
-        st.markdown("### Por categoria (top 25)")
+        st.markdown("### By category (top 25)")
         by_cat = df_filtered.groupby("CATEGORIA").agg(
-            itens=("PRODUTO", "count"),
+            items=("PRODUTO", "count"),
             avg_price=("Preco_Num", "mean"),
             med_price=("Preco_Num", "median"),
-        ).reset_index().sort_values(["itens", "avg_price"], ascending=False).head(25)
+        ).reset_index().sort_values(["items", "avg_price"], ascending=False).head(25)
         by_cat["avg_fmt"] = by_cat["avg_price"].apply(format_brl)
-        st.dataframe(by_cat[["CATEGORIA", "itens", "avg_fmt"]], hide_index=True, use_container_width=True)
+        st.dataframe(by_cat[["CATEGORIA", "items", "avg_fmt"]], hide_index=True, use_container_width=True)
         st.plotly_chart(
-            px.scatter(by_cat, x="itens", y="avg_price", size="itens", hover_data=["CATEGORIA"], title="Category: itens vs average price"),
+            px.scatter(by_cat, x="items", y="avg_price", size="items", hover_data=["CATEGORIA"], title="Category: items vs average price"),
             use_container_width=True,
         )
 
@@ -1105,17 +1063,17 @@ with tabs[6]:
 
         if ai_available():
             with st.expander("AI summary of this analysis"):
-                if st.button("Gerar resumo por IA", key="ai_data_analysis"):
+                if st.button("Generate AI summary", key="ai_data_analysis"):
                     prompt = "You are a senior data analyst for a small FDM 3D print business.\n"
                     prompt += "Summarize key insights from the current filter dataset: pricing, categories, sources, and opportunities.\n"
                     prompt += "Provide 6 bullet points and 3 actions.\n"
                     prompt += "Summary stats: " + str(desc.to_dict("records")) + "\n"
-                    prompt += "Por fonte: " + str(by_source.to_dict("records")) + "\n"
+                    prompt += "By source: " + str(by_source.to_dict("records")) + "\n"
                     prompt += "Top terms: " + str(top_words[:15]) + "\n"
                     st.write(ai_ask(prompt))
 
 with tabs[7]:
-    st.subheader("Mercado & Clusters")
+    st.subheader("Market Clusters")
     if "CLUSTER_MKT" not in df_filtered.columns:
         st.info("No cluster info.")
     else:
@@ -1138,7 +1096,7 @@ with tabs[7]:
         with colA:
             fig = px.scatter(cluster_table, x="itens", y="ticket", size="itens",
                              hover_data=["CLUSTER_NOME", "flash_pct", "fonte_div"],
-                             title="Ticket vs competition (itens)")
+                             title="Ticket vs competition (items)")
             st.plotly_chart(fig, use_container_width=True)
         with colB:
             topN = cluster_table.head(15).copy().sort_values("ticket")
@@ -1154,7 +1112,7 @@ with tabs[7]:
             st.dataframe(show[["CLUSTER_MKT", "CLUSTER_NOME", "score_base", "itens", "ticket_fmt", "flash_pct", "EX1", "EX2", "EX3"]],
                          hide_index=True, use_container_width=True)
         else:
-            st.info("Dados insuficientes for gap finder in this filter.")
+            st.info("Not enough data for gap finder in this filter.")
 
 # -----------------------------
 # TAB 8 PRICING ML
@@ -1191,7 +1149,7 @@ with tabs[8]:
         df_filtered["is_anomaly"] = 0
 
     cl = df_filtered.groupby(["CLUSTER_MKT", "CLUSTER_NOME"], dropna=False).agg(
-        itens=("PRODUTO", "count"),
+        items=("PRODUTO", "count"),
         avg_price=("Preco_Num", "mean"),
         med_price=("Preco_Num", "median"),
         flash_share=("Logistica", lambda x: float((pd.Series(x) == "FLASH").mean())),
@@ -1207,7 +1165,7 @@ with tabs[8]:
         return ((x.clip(lo, hi) - lo) / (hi - lo)).fillna(0.0)
 
     ticket_n = norm01(cl["avg_price"])
-    low_comp_n = 1.0 - norm01(cl["itens"])
+    low_comp_n = 1.0 - norm01(cl["items"])
     flash_n = cl["flash_share"].fillna(0.0).clip(0, 1)
     anom_pen = cl["anom_share"].fillna(0.0).clip(0, 1)
 
@@ -1225,7 +1183,7 @@ with tabs[8]:
     show["anom_pct"] = (show["anom_share"] * 100).round(1)
 
     st.dataframe(
-        show[["CLUSTER_MKT", "CLUSTER_NOME", "itens", "avg_price_fmt", "flash_pct", "anom_pct", "score_fdm"]],
+        show[["CLUSTER_MKT", "CLUSTER_NOME", "items", "avg_price_fmt", "flash_pct", "anom_pct", "score_fdm"]],
         hide_index=True,
         use_container_width=True,
     )
@@ -1257,10 +1215,10 @@ with tabs[8]:
     )
 
     if sim is None or sim.empty or "Lucro_por_Hora" not in sim.columns:
-        st.info("Dados insuficientes to compute profit/hour score.")
+        st.info("Not enough data to compute profit/hour score.")
     else:
         clp = sim.groupby(["CLUSTER_MKT", "CLUSTER_NOME"], dropna=False).agg(
-            itens=("PRODUTO", "count"),
+            items=("PRODUTO", "count"),
             avg_price=("Preco_Num", "mean"),
             avg_profit_h=("Lucro_por_Hora", "mean"),
             pct_negative=("Lucro_Estimado", lambda s: float((pd.Series(s) < 0).mean())),
@@ -1282,7 +1240,7 @@ with tabs[8]:
         sp["avg_profit_h_fmt"] = sp["avg_profit_h"].apply(format_brl)
         sp["neg_pct"] = (sp["pct_negative"] * 100).round(1)
         st.dataframe(
-            sp[["CLUSTER_MKT", "CLUSTER_NOME", "itens", "avg_price_fmt", "avg_profit_h_fmt", "neg_pct", "score_profit"]],
+            sp[["CLUSTER_MKT", "CLUSTER_NOME", "items", "avg_price_fmt", "avg_profit_h_fmt", "neg_pct", "score_profit"]],
             hide_index=True,
             use_container_width=True,
         )
@@ -1309,7 +1267,7 @@ with tabs[8]:
                 st.write(ai_ask(prompt))
 
 with tabs[9]:
-    st.subheader("Precificacao ML")
+    st.subheader("Pricing ML")
 
     if global_metrics is None or "Preco_Previsto" not in df_filtered.columns:
         st.warning("Price model not active.")
@@ -1408,7 +1366,7 @@ with tabs[11]:
     cA.metric("Avg profit (est)", format_brl(sim_df["Lucro_Estimado"].mean() if len(sim_df) else 0))
     cB.metric("Avg profit/hour", format_brl(sim_df["Lucro_por_Hora"].mean() if len(sim_df) else 0))
     cC.metric("Top profit/hour", format_brl(sim_df["Lucro_por_Hora"].max() if len(sim_df) else 0))
-    cD.metric("Negative profit itens", int((sim_df["Lucro_Estimado"] < 0).sum()) if len(sim_df) else 0)
+    cD.metric("Negative profit items", int((sim_df["Lucro_Estimado"] < 0).sum()) if len(sim_df) else 0)
 
     st.markdown("---")
     st.subheader("Top 30 by profit/hour")
