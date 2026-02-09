@@ -11,7 +11,7 @@ python-levenshtein
 streamlit-plotly-events
 google-generativeai
 requests
-
+scipy
 
 
 # extras para "tudo" (com fallback no código se não carregar)
