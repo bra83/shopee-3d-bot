@@ -5,40 +5,39 @@
 #  Inclui: contagem de itens válidos por etapa, e modelo de preço aplicando no filtro.)
 #
 # Correções incluídas (2026-02-07):
-# - Problema de caracteres "Diagnóstico": garantir arquivo em UTF-8 + header coding utf-8
+# - Problema de caracteres "DiagnÃ³stico": garantir arquivo em UTF-8 + header coding utf-8
 # - Erro ML "Sparse data was passed for X, but dense data is required": adiciona transformer ToDense antes do HistGradientBoostingRegressor
 # - Sanitização forte (NaN/strings em numérico) antes do treino e antes de prever
 # - Mostra o erro real do treino no sidebar
 
 import streamlit as st
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+
+# --- Paleta de cores (contraste) ---
+COLOR_MAP_FONTE = {
+    "Shopee": "#ff7f0e",  # laranja
+    "Elo7": "#2ca02c",    # verde
+}
+try:
+    px.defaults.color_discrete_sequence = px.colors.qualitative.Safe
+except Exception:
+    pass
+import numpy as np
+from sklearn.cluster import KMeans
+from wordcloud import WordCloud, STOPWORDS
+import matplotlib.pyplot as plt
+
 import time
 
+# SciPy (opcional) para o Otimizador
 try:
     from scipy.optimize import linprog
 except Exception:
     linprog = None
-import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-import numpy as np
-from sklearn.cluster import KMeans
-from wordcloud import WordCloud, STOPWORDS
-
-# --- Stopwords extras para nomes de clusters (remove palavras vazias) ---
-CLUSTER_STOPWORDS = {
-    "de","da","do","das","dos","com","para","por","em","no","na","nos","nas",
-    "um","uma","uns","umas","e","ou","a","o","as","os",
-    "kit","un","cm","mm","3d","pra","pro","p","q","que"
-}
-import matplotlib.pyplot as plt
 from thefuzz import process, fuzz
 import re
-import unicodedata
-
-def to_ascii(s: str) -> str:
-    s = "" if s is None else str(s)
-    s = unicodedata.normalize("NFKD", s)
-    return s.encode("ascii", "ignore").decode("ascii")
 from collections import Counter
 
 # --- ML extra ---
@@ -76,6 +75,36 @@ class ToDenseTransformer(BaseEstimator, TransformerMixin):
 
 # --- 1. CONFIGURAÇÃO ---
 st.set_page_config(page_title="BCRUZ 3D Enterprise", layout="wide", page_icon="🏢")
+
+# -----------------------------
+# Memória de custos (persistência entre abas)
+# -----------------------------
+if "cost_config" not in st.session_state:
+    st.session_state["cost_config"] = {
+        "custo_hora": 8.0,
+        "custo_grama": 0.12,
+        "taxa_mkt": 0.14,
+        "taxa_falha": 0.06,
+        "embalagem": 4.0,
+        "gramas_base": 60,
+    }
+
+
+# -----------------------------
+# Robustez: carregamento com retry (Google Sheets CSV)
+# -----------------------------
+def load_csv_retry(url: str, attempts: int = 3, sleep_s: float = 1.0, **read_csv_kwargs):
+    last_err = None
+    for i in range(1, attempts + 1):
+        try:
+            return pd.read_csv(url, **read_csv_kwargs)
+        except Exception as e:
+            last_err = e
+            if i < attempts:
+                time.sleep(sleep_s)
+    # última falha
+    raise last_err
+
 
 # --- 2. LINKS ---
 URL_ELO7 = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRtLCFvhbktUToSC6XCCtsEk-Fats-FqW8Nv_fG9AG_8fWfu7pMIFq7Zo0m0oS37r0coiqQyn9ZWc0F/pub?gid=1574041650&single=true&output=csv"
@@ -185,12 +214,12 @@ def carregar_dados():
 
     for f in fontes:
         try:
-            temp_df = pd.read_csv(f["url"], on_bad_lines="skip", dtype=str)
+            temp_df = load_csv_retry(f["url"], on_bad_lines="skip", dtype=str)
             temp_df.columns = [str(c).strip().upper() for c in temp_df.columns]
 
             raw_n = int(len(temp_df))
             if temp_df.empty:
-                per_source.append({"fonte": f["nome"], "raw": raw_n, "validos": 0})
+                per_source.append({"fonte": f["nome"], "raw": raw_n, "validos": 0, "erro": ""})
                 continue
 
             col_prod = next((c for c in temp_df.columns if any(x in c for x in ["PRODUT", "NOME", "TITULO"])), "PRODUTO")
@@ -236,12 +265,12 @@ def carregar_dados():
             after_valid_n = int(len(temp_df))
 
             stats.append({"raw": raw_n, "after_price": after_price_n, "after_valid": after_valid_n})
-            per_source.append({"fonte": f["nome"], "raw": raw_n, "validos": after_valid_n})
+            per_source.append({"fonte": f["nome"], "raw": raw_n, "validos": after_valid_n, "erro": ""})
 
             dfs.append(temp_df[cols])
 
-        except Exception:
-            per_source.append({"fonte": f["nome"], "raw": 0, "validos": 0})
+        except Exception as e:
+            per_source.append({"fonte": f["nome"], "raw": 0, "validos": 0, "erro": str(e)})
             continue
 
     final_df = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
@@ -394,7 +423,7 @@ def market_clusters(d: pd.DataFrame, n_clusters: int = 18):
             mean_vec = X_t[idx].mean(axis=0)
             mean_vec = np.asarray(mean_vec).ravel()
             top_idx = mean_vec.argsort()[-4:][::-1]
-            top_terms = [vocab[i] for i in top_idx if mean_vec[i] > 0 and vocab[i] not in CLUSTER_STOPWORDS]
+            top_terms = [vocab[i] for i in top_idx if mean_vec[i] > 0]
             cluster_names[cid] = " / ".join(top_terms) if top_terms else f"Cluster {cid}"
 
         out["CLUSTER_NOME"] = out["CLUSTER_MKT"].map(cluster_names).fillna(out["CLUSTER_MKT"].astype(str))
@@ -641,6 +670,99 @@ def compute_profit(d: pd.DataFrame, custo_hora=8.0, custo_grama=0.12, gramas_bas
 
 
 # -----------------------------------------
+# OTIMIZADOR DE FÁBRICA (linprog)
+# -----------------------------------------
+def run_factory_optimizer(df_sim: pd.DataFrame, hours_avail: float = 40.0):
+    """Sugere mix de produção por CLUSTER_NOME maximizando lucro total com limite de horas.
+    Requer colunas: CLUSTER_NOME, Lucro_Estimado, Horas_Estimadas.
+    """
+    if df_sim is None or df_sim.empty:
+        return pd.DataFrame()
+
+    if linprog is None:
+        raise RuntimeError("SciPy não está instalado (linprog indisponível). Adicione 'scipy' ao requirements.txt.")
+
+    g = df_sim.groupby("CLUSTER_NOME", dropna=False).agg(
+        itens=("PRODUTO", "count"),
+        lucro_medio=("Lucro_Estimado", "mean"),
+        horas_media=("Horas_Estimadas", "mean"),
+        preco_medio=("Preco_Num", "mean"),
+    ).reset_index()
+
+    g = g.replace([np.inf, -np.inf], np.nan).dropna(subset=["lucro_medio", "horas_media"])
+    g = g[g["horas_media"] > 0].copy()
+    if g.empty:
+        return pd.DataFrame()
+
+    # Variáveis: q_i >= 0 (quantidade por cluster)
+    c = -g["lucro_medio"].astype(float).values  # maximizar lucro => minimizar -lucro
+    A_ub = np.array([g["horas_media"].astype(float).values])
+    b_ub = np.array([float(hours_avail)])
+
+    bounds = [(0, None) for _ in range(len(g))]
+
+    res = linprog(c=c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method="highs")
+    if not res.success:
+        raise RuntimeError(f"Otimização falhou: {res.message}")
+
+    g["qtd_sugerida"] = np.maximum(0.0, res.x)
+    g["horas_usadas"] = g["qtd_sugerida"] * g["horas_media"]
+    g["lucro_total"] = g["qtd_sugerida"] * g["lucro_medio"]
+
+    g = g.sort_values("lucro_total", ascending=False)
+
+    # arredondamento amigável (sem perder o valor real)
+    g["qtd_sugerida_round"] = g["qtd_sugerida"].round(2)
+    g["horas_usadas_round"] = g["horas_usadas"].round(2)
+    g["lucro_total_round"] = g["lucro_total"].round(2)
+
+    return g
+
+
+# -----------------------------------------
+# MATRIZ BCG (portfólio por cluster)
+# -----------------------------------------
+def build_bcg_matrix(df_sim: pd.DataFrame) -> pd.DataFrame:
+    """Retorna tabela por CLUSTER_NOME com volume e margem de lucro % para matriz BCG."""
+    if df_sim is None or df_sim.empty:
+        return pd.DataFrame()
+
+    d = df_sim.copy()
+    # margem % baseada no lucro estimado
+    d["margem_pct"] = np.where(d["Preco_Num"] > 0, (d["Lucro_Estimado"] / d["Preco_Num"]) * 100.0, np.nan)
+
+    g = d.groupby("CLUSTER_NOME", dropna=False).agg(
+        volume=("PRODUTO", "count"),
+        margem_pct=("margem_pct", "mean"),
+        lucro_h=("Lucro_por_Hora", "mean"),
+        ticket=("Preco_Num", "mean"),
+    ).reset_index()
+
+    g = g.replace([np.inf, -np.inf], np.nan).dropna(subset=["margem_pct", "volume"])
+    if g.empty:
+        return g
+
+    vol_cut = g["volume"].median()
+    mar_cut = g["margem_pct"].median()
+
+    def classify(row):
+        high_vol = row["volume"] >= vol_cut
+        high_mar = row["margem_pct"] >= mar_cut
+        if high_vol and high_mar:
+            return "Estrela"
+        if high_vol and not high_mar:
+            return "Vaca Leiteira"
+        if (not high_vol) and high_mar:
+            return "Aposta"
+        return "Abacaxi"
+
+    g["tipo_bcg"] = g.apply(classify, axis=1)
+    g.attrs["vol_cut"] = float(vol_cut)
+    g.attrs["mar_cut"] = float(mar_cut)
+    return g
+
+
+# -----------------------------------------
 # MODO CEO (resumo)
 # -----------------------------------------
 def build_ceo_summary(d: pd.DataFrame, gap: pd.DataFrame):
@@ -691,6 +813,19 @@ price_model, price_metrics, df_enriched = train_price_model(df_enriched, min_sam
 # ============================================================
 st.sidebar.title("🎛️ Centro de Comando")
 
+# --- Custos (persistentes) ---
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 💰 Custos (persistentes)")
+cc = st.session_state["cost_config"]
+cc["custo_hora"] = st.sidebar.number_input("Custo/hora máquina (R$)", min_value=0.0, value=float(cc.get("custo_hora", 8.0)), step=0.5, key="cc_custo_hora")
+cc["custo_grama"] = st.sidebar.number_input("Custo/grama filamento (R$)", min_value=0.0, value=float(cc.get("custo_grama", 0.12)), step=0.01, format="%.2f", key="cc_custo_grama")
+cc["taxa_mkt"] = st.sidebar.number_input("Taxa marketplace", min_value=0.0, max_value=0.8, value=float(cc.get("taxa_mkt", 0.14)), step=0.01, format="%.2f", key="cc_taxa_mkt")
+cc["taxa_falha"] = st.sidebar.number_input("Taxa falha/refugo", min_value=0.0, max_value=0.8, value=float(cc.get("taxa_falha", 0.06)), step=0.01, format="%.2f", key="cc_taxa_falha")
+cc["embalagem"] = st.sidebar.number_input("Embalagem (R$)", min_value=0.0, value=float(cc.get("embalagem", 4.0)), step=0.5, key="cc_embalagem")
+cc["gramas_base"] = st.sidebar.number_input("Gramas base (proxy)", min_value=10, value=int(cc.get("gramas_base", 60)), step=5, key="cc_gramas_base")
+st.session_state["cost_config"] = cc
+
+
 if not df_enriched.empty:
     st.sidebar.markdown("### ✅ Saúde dos Dados")
 
@@ -710,7 +845,7 @@ if not df_enriched.empty:
     st.sidebar.metric("Itens válidos (TOTAL pós-limpeza)", int(len(df_enriched)))
 
     st.sidebar.markdown("---")
-    st.sidebar.markdown("### 🧠 Status do Modelo de Preco")
+    st.sidebar.markdown("### 🧠 Status do Modelo de Preço")
     if isinstance(price_metrics, dict) and "ERROR" in price_metrics:
         st.sidebar.error(f"Treino falhou: {price_metrics['ERROR']}")
         st.sidebar.caption(f"Linhas treino: {price_metrics.get('TRAIN_ROWS','—')} | mínimo: {price_metrics.get('MIN_SAMPLES','—')}")
@@ -722,7 +857,7 @@ if not df_enriched.empty:
     st.sidebar.markdown("### 🔍 Filtro de Ticket")
 
     max_val = float(df_enriched["Preco_Num"].max())
-    preco_max = st.sidebar.slider("Teto de Preco (R$)", 0.0, max_val, min(500.0, max_val))
+    preco_max = st.sidebar.slider("Teto de Preço (R$)", 0.0, max_val, min(500.0, max_val))
     fontes_sel = st.sidebar.multiselect("Fontes", df_enriched["FONTE"].unique(), default=df_enriched["FONTE"].unique())
 
     df_filtered = df_enriched[
@@ -765,44 +900,97 @@ if not df_enriched.empty:
         df_filtered["Faixa_Min"] = np.maximum(0.0, df_filtered["Preco_Previsto"] - mae_global)
         df_filtered["Faixa_Max"] = df_filtered["Preco_Previsto"] + mae_global
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs([
-        "📊 Visao Geral",
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab_otimizador, tab_bcg = st.tabs([
+        "📊 Visão Geral",
         "⚔️ Comparador",
         "🧠 IA & Insights",
         "🧪 Laboratório",
         "💡 Criador",
         "📂 Dados",
         "🧩 Mercado & Clusters",
-        "💸 Precificacao ML",
+        "💸 Precificação ML",
         "🚨 Alertas",
         "🏭 Simulador",
         "🧭 Recomendador",
         "📈 Forecast",
+        "🏗️ Otimizador",
+        "🧩 Matriz BCG"
     ])
 
     with tab1:
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Total Produtos", len(df_filtered))
         media = pd.to_numeric(df_filtered["Preco_Num"], errors="coerce").fillna(0).mean()
-        c2.metric("Ticket Medio", format_brl(media))
+        c2.metric("Ticket Médio", format_brl(media))
         c3.metric("Fontes", len(df_filtered["FONTE"].unique()))
         c4.metric("Itens Flash", len(df_filtered[df_filtered["Logistica"] == "⚡ FLASH"]))
 
         st.markdown("---")
         col_g1, col_g2 = st.columns(2)
         with col_g1:
-            st.plotly_chart(px.box(df_filtered, x="FONTE", y="Preco_Num", color="FONTE", title="Distribuição de Precos (Limpa)"),
+            st.plotly_chart(px.box(df_filtered, x="FONTE", y="Preco_Num", color="FONTE", color_discrete_map=COLOR_MAP_FONTE, title="Distribuição de Preços (Limpa)"),
                             use_container_width=True)
         with col_g2:
             st.plotly_chart(px.pie(df_filtered, names="CATEGORIA", title="Share de Categorias"), use_container_width=True)
 
         st.markdown("---")
+        
+        st.markdown("---")
+        st.subheader("☁️ Nuvens de Palavras (Visão Geral)")
+        excluir = st.text_input("Palavras para excluir (separe por vírgula)", value="", key="wc_excluir_overview")
+        extras = set([normalize_text(x).strip() for x in excluir.split(",") if normalize_text(x).strip()])
+
+        sw_local = set(STOPWORDS)
+        sw_local.update(["de", "para", "3d", "pla", "com", "o", "a", "em", "do", "da", "kit", "un", "cm", "mm", "peças", "pecas", "und", "unid"])
+        sw_local.update(extras)
+
+        c_cloud1, c_cloud2 = st.columns(2)
+        with c_cloud1:
+            st.caption("📌 MAIS FREQUENTES (o que mais aparece nos títulos)")
+            texto_geral = " ".join(df_filtered["PRODUTO"].astype(str)) if "PRODUTO" in df_filtered.columns else ""
+            try:
+                if texto_geral.strip():
+                    wc1 = WordCloud(width=500, height=360, background_color="white", stopwords=sw_local).generate(texto_geral)
+                    fig1, ax1 = plt.subplots()
+                    ax1.imshow(wc1)
+                    ax1.axis("off")
+                    st.pyplot(fig1)
+                else:
+                    st.info("Sem texto suficiente para gerar a nuvem.")
+            except Exception as e:
+                st.warning(f"Não consegui gerar a nuvem: {e}")
+
+        with c_cloud2:
+            st.caption("💰 MAIOR VALOR (palavras associadas a preços mais altos)")
+            try:
+                word_prices = {}
+                if ("PRODUTO" in df_filtered.columns) and ("Preco_Num" in df_filtered.columns):
+                    for _, row in df_filtered.iterrows():
+                        palavras = str(row["PRODUTO"]).lower().split()
+                        for pz in palavras:
+                            if pz not in sw_local and len(pz) > 3:
+                                word_prices.setdefault(pz, []).append(float(row["Preco_Num"]))
+                if word_prices:
+                    avg_prices = {k: sum(v)/len(v) for k, v in word_prices.items() if len(v) > 1}
+                    if avg_prices:
+                        wc2 = WordCloud(width=500, height=360, background_color="#222", max_words=60).generate_from_frequencies(avg_prices)
+                        fig2, ax2 = plt.subplots()
+                        ax2.imshow(wc2)
+                        ax2.axis("off")
+                        st.pyplot(fig2)
+                    else:
+                        st.info("Dados insuficientes para calcular valor por palavra.")
+                else:
+                    st.info("Sem dados suficientes para gerar a nuvem por valor.")
+            except Exception as e:
+                st.warning(f"Não consegui gerar a nuvem por valor: {e}")
+
         st.subheader("🧠 Modo CEO — decisões")
         for m in build_ceo_summary(df_filtered, gap_df)[:12]:
             st.write(m)
 
     with tab2:
-        st.header("⚔️ Comparador de Precos")
+        st.header("⚔️ Comparador de Preços")
         col_input, col_check = st.columns([3, 1])
         with col_input:
             termo = st.text_input("Filtrar Produto:", placeholder="Ex: Vaso Robert")
@@ -826,8 +1014,8 @@ if not df_enriched.empty:
                 media_local = pd.to_numeric(df_comp[df_comp["FONTE"] == fonte]["Preco_Num"], errors="coerce").fillna(0).mean()
                 cols_metrics[i].metric(f"Média {fonte}", format_brl(media_local))
 
-            fig_comp = px.scatter(df_comp, x="FONTE", y="Preco_Num", color="FONTE", size="Preco_Num",
-                                  hover_data=["PRODUTO"], title="Comparativo de Precos")
+            fig_comp = px.scatter(df_comp, x="FONTE", y="Preco_Num", color="FONTE", color_discrete_map=COLOR_MAP_FONTE, size="Preco_Num",
+                                  hover_data=["PRODUTO"], title="Comparativo de Preços")
             st.plotly_chart(fig_comp, use_container_width=True)
             st.dataframe(df_comp[["FONTE", "PRODUTO", "Preco_Num", "LINK"]], hide_index=True, use_container_width=True)
         else:
@@ -835,18 +1023,14 @@ if not df_enriched.empty:
                 st.info("Busque um produto acima.")
 
     with tab3:
-        st.subheader("Nuvens de Inteligencia")
+        st.subheader("Nuvens de Inteligência")
+
+        excluir_wc = st.text_input("Palavras para excluir (separe por vírgula)", value="", key="wc_excluir_tab3")
+        extras_wc = set([normalize_text(x).strip() for x in excluir_wc.split(",") if normalize_text(x).strip()])
 
         sw = set(STOPWORDS)
-excluir_txt = st.text_input("Palavras para excluir (separe por virgula)", value="")
-if excluir_txt:
-    extras = [w.strip().lower() for w in excluir_txt.split(",") if w.strip()]
-    for w in extras:
-        try:
-            sw_local.add(w)
-        except Exception:
-            sw.add(w)
         sw.update(["de", "para", "3d", "pla", "com", "o", "a", "em", "do", "da", "kit", "un", "cm", "peças"])
+        sw.update(extras_wc)
 
         c_cloud1, c_cloud2 = st.columns(2)
         with c_cloud1:
@@ -887,9 +1071,9 @@ if excluir_txt:
         dB.metric("Clusters Mercado (filtro)", int(df_filtered["CLUSTER_MKT"].nunique()) if "CLUSTER_MKT" in df_filtered.columns else 0)
         dC.metric("Anomalias (filtro)", int(pd.to_numeric(df_filtered.get("is_anomaly", 0), errors="coerce").fillna(0).sum()))
         if isinstance(price_metrics, dict) and "MAE" in price_metrics:
-            dD.metric("Modelo Preco", f"MAE {format_brl(price_metrics['MAE'])}")
+            dD.metric("Modelo Preço", f"MAE {format_brl(price_metrics['MAE'])}")
         else:
-            dD.metric("Modelo Preco", "Sem treino")
+            dD.metric("Modelo Preço", "Sem treino")
             if isinstance(price_metrics, dict) and "ERROR" in price_metrics:
                 st.error(f"Erro do treino: {price_metrics['ERROR']}")
 
@@ -902,14 +1086,14 @@ if excluir_txt:
         with c3:
             tp = st.selectbox("Tipo", ["Barras", "Dispersão", "Boxplot"])
         if tp == "Barras":
-            st.plotly_chart(px.bar(df_filtered, x=cx, y=cy, color="FONTE"), use_container_width=True)
+            st.plotly_chart(px.bar(df_filtered, x=cx, y=cy, color="FONTE", color_discrete_map=COLOR_MAP_FONTE), use_container_width=True)
         elif tp == "Dispersão":
-            st.plotly_chart(px.scatter(df_filtered, x=cx, y=cy, color="FONTE"), use_container_width=True)
+            st.plotly_chart(px.scatter(df_filtered, x=cx, y=cy, color="FONTE", color_discrete_map=COLOR_MAP_FONTE), use_container_width=True)
         elif tp == "Boxplot":
-            st.plotly_chart(px.box(df_filtered, x=cx, y=cy, color="FONTE"), use_container_width=True)
+            st.plotly_chart(px.box(df_filtered, x=cx, y=cy, color="FONTE", color_discrete_map=COLOR_MAP_FONTE), use_container_width=True)
 
     with tab5:
-        st.header("Gerador de Titulos SEO")
+        st.header("Gerador de Títulos SEO")
         keyword = st.text_input("Produto:", "Vaso")
         if keyword:
             df_c = df[df["PRODUTO"].str.contains(keyword, case=False, na=False)]
@@ -962,7 +1146,7 @@ if excluir_txt:
             st.info("Sem dados suficientes para gap finder no filtro atual.")
 
     with tab8:
-        st.header("💸 Precificacao ML")
+        st.header("💸 Precificação ML")
         st.caption(f"Itens válidos TOTAL pós-limpeza: {len(df_enriched)} | mínimo para treinar: {price_metrics.get('MIN_SAMPLES', 40) if isinstance(price_metrics, dict) else 40}")
 
         if price_model is None or not isinstance(price_metrics, dict) or "MAE" not in price_metrics or "Preco_Previsto" not in df_filtered.columns:
@@ -978,7 +1162,7 @@ if excluir_txt:
 
             st.markdown("---")
             st.subheader("Mapa: Real vs Esperado (no filtro)")
-            fig = px.scatter(df_filtered, x="Preco_Previsto", y="Preco_Num", color="FONTE",
+            fig = px.scatter(df_filtered, x="Preco_Previsto", y="Preco_Num", color="FONTE", color_discrete_map=COLOR_MAP_FONTE,
                              hover_data=["PRODUTO", "CATEGORIA", "Logistica"],
                              title="Real vs Esperado (acima: caros; abaixo: baratos)")
             try:
@@ -1044,8 +1228,8 @@ if excluir_txt:
 
         st.markdown("---")
         cA, cB, cC, cD = st.columns(4)
-        cA.metric("Lucro medio (estimado)", format_brl(sim_df["Lucro_Estimado"].mean()))
-        cB.metric("Lucro/hora medio", format_brl(sim_df["Lucro_por_Hora"].mean()))
+        cA.metric("Lucro médio (estimado)", format_brl(sim_df["Lucro_Estimado"].mean()))
+        cB.metric("Lucro/hora médio", format_brl(sim_df["Lucro_por_Hora"].mean()))
         cC.metric("Top lucro/hora", format_brl(sim_df["Lucro_por_Hora"].max()))
         cD.metric("Itens com lucro negativo", int((sim_df["Lucro_Estimado"] < 0).sum()))
 
@@ -1054,8 +1238,8 @@ if excluir_txt:
         top = sim_df.sort_values("Lucro_por_Hora", ascending=False).head(30).copy()
         top["Lucro"] = top["Lucro_Estimado"].apply(format_brl)
         top["Lucro/H"] = top["Lucro_por_Hora"].apply(format_brl)
-        top["Preco"] = top["Preco_Num"].apply(format_brl)
-        st.dataframe(top[["FONTE", "PRODUTO", "Preco", "Lucro", "Lucro/H", "Horas_Estimadas", "Gramagem_Estimada", "LINK"]],
+        top["Preço"] = top["Preco_Num"].apply(format_brl)
+        st.dataframe(top[["FONTE", "PRODUTO", "Preço", "Lucro", "Lucro/H", "Horas_Estimadas", "Gramagem_Estimada", "LINK"]],
                      hide_index=True, use_container_width=True)
 
     with tab11:
@@ -1083,8 +1267,8 @@ if excluir_txt:
         rec = base.sort_values("score_rec", ascending=False).head(40).copy()
 
         view = rec[["score_rec", "CLUSTER_NOME", "FONTE", "PRODUTO", "Preco_Num", "Logistica", "LINK"]].copy()
-        view["Preco"] = view["Preco_Num"].apply(format_brl)
-        st.dataframe(view[["score_rec", "CLUSTER_NOME", "FONTE", "PRODUTO", "Preco", "Logistica", "LINK"]],
+        view["Preço"] = view["Preco_Num"].apply(format_brl)
+        st.dataframe(view[["score_rec", "CLUSTER_NOME", "FONTE", "PRODUTO", "Preço", "Logistica", "LINK"]],
                      hide_index=True, use_container_width=True)
 
     with tab12:
@@ -1111,8 +1295,8 @@ if excluir_txt:
                     ts = tmp.groupby("dia")["Preco_Num"].mean().reset_index()
                     ts["dia"] = pd.to_datetime(ts["dia"])
 
-                    st.subheader("Série: ticket medio diário")
-                    st.plotly_chart(px.line(ts, x="dia", y="Preco_Num", title="Ticket medio diário (observado)"), use_container_width=True)
+                    st.subheader("Série: ticket médio diário")
+                    st.plotly_chart(px.line(ts, x="dia", y="Preco_Num", title="Ticket médio diário (observado)"), use_container_width=True)
 
                     st.subheader("Previsão (proxy): média móvel + tendência linear")
                     ts = ts.sort_values("dia")
@@ -1129,5 +1313,94 @@ if excluir_txt:
             except Exception as e:
                 st.warning(f"Não consegui gerar forecast: {e}")
 
+
+    # 13. OTIMIZADOR
+    with tab_otimizador:
+        st.header("🏗️ Otimizador de Fábrica (mix de produção)")
+        st.caption("Usa matemática (linprog) para sugerir quantidades por cluster, maximizando lucro total com limite de horas semanais.")
+
+        hours_avail = st.number_input("Horas disponíveis na semana", min_value=1.0, value=40.0, step=1.0)
+        st.caption("Dica: instale `scipy` no requirements.txt para habilitar o otimizador.")
+
+        # Recalcula simulador usando custos persistentes (sidebar)
+        cc = st.session_state["cost_config"]
+        sim_df_opt = compute_profit(
+            df_filtered,
+            custo_hora=float(cc.get("custo_hora", 8.0)),
+            custo_grama=float(cc.get("custo_grama", 0.12)),
+            gramas_base=int(cc.get("gramas_base", 60)),
+            taxa_falha=float(cc.get("taxa_falha", 0.06)),
+            taxa_marketplace=float(cc.get("taxa_mkt", 0.14)),
+            embalagem=float(cc.get("embalagem", 4.0)),
+        )
+
+        if st.button("Rodar otimizador"):
+            try:
+                plan = run_factory_optimizer(sim_df_opt, hours_avail=float(hours_avail))
+                if plan.empty:
+                    st.info("Sem dados suficientes para otimizar.")
+                else:
+                    plan_view = plan.copy()
+                    plan_view["lucro_medio_fmt"] = plan_view["lucro_medio"].apply(format_brl)
+                    plan_view["preco_medio_fmt"] = plan_view["preco_medio"].apply(format_brl)
+                    plan_view["lucro_total_fmt"] = plan_view["lucro_total"].apply(format_brl)
+                    st.dataframe(
+                        plan_view[["CLUSTER_NOME","itens","preco_medio_fmt","lucro_medio_fmt","horas_media","qtd_sugerida_round","horas_usadas_round","lucro_total_fmt"]],
+                        hide_index=True,
+                        use_container_width=True,
+                    )
+
+                    csv = plan_view.to_csv(index=False).encode("utf-8")
+                    st.download_button("⬇️ Baixar plano (CSV)", data=csv, file_name="otimizador_plano.csv", mime="text/csv")
+            except Exception as e:
+                st.error(f"Otimizador indisponível/erro: {e}")
+
+    # 14. MATRIZ BCG
+    with tab_bcg:
+        st.header("🧩 Matriz BCG (Volume x Margem)")
+        st.caption("Classifica clusters em: Estrela, Vaca Leiteira, Aposta e Abacaxi (thresholds = medianas do filtro).")
+
+        cc = st.session_state["cost_config"]
+        sim_df_bcg = compute_profit(
+            df_filtered,
+            custo_hora=float(cc.get("custo_hora", 8.0)),
+            custo_grama=float(cc.get("custo_grama", 0.12)),
+            gramas_base=int(cc.get("gramas_base", 60)),
+            taxa_falha=float(cc.get("taxa_falha", 0.06)),
+            taxa_marketplace=float(cc.get("taxa_mkt", 0.14)),
+            embalagem=float(cc.get("embalagem", 4.0)),
+        )
+
+        bcg = build_bcg_matrix(sim_df_bcg)
+        if bcg.empty:
+            st.info("Sem dados suficientes para montar a Matriz BCG.")
+        else:
+            vol_cut = bcg.attrs.get("vol_cut", bcg["volume"].median())
+            mar_cut = bcg.attrs.get("mar_cut", bcg["margem_pct"].median())
+
+            fig = px.scatter(
+                bcg,
+                x="volume",
+                y="margem_pct",
+                color="tipo_bcg",
+                hover_data=["CLUSTER_NOME", "ticket", "lucro_h"],
+                title="Matriz BCG por Cluster (Volume x Margem %)",
+            )
+            # linhas de corte
+            fig.add_shape(type="line", x0=vol_cut, y0=bcg["margem_pct"].min(), x1=vol_cut, y1=bcg["margem_pct"].max())
+            fig.add_shape(type="line", x0=bcg["volume"].min(), y0=mar_cut, x1=bcg["volume"].max(), y1=mar_cut)
+            st.plotly_chart(fig, use_container_width=True)
+
+            bcg_view = bcg.copy()
+            bcg_view["ticket_fmt"] = bcg_view["ticket"].apply(format_brl)
+            bcg_view["margem_%"] = bcg_view["margem_pct"].round(1)
+            st.dataframe(bcg_view[["CLUSTER_NOME","tipo_bcg","volume","margem_%","ticket_fmt","lucro_h"]], hide_index=True, use_container_width=True)
+
 else:
-    st.error("⚠️ Erro ao carregar dados. Verifique o Google Sheets.")
+    st.error("⚠️ Erro ao carregar dados. Verifique o Google Sheets (ou uma oscilacao de rede).")
+per_source = df.attrs.get("per_source", []) if isinstance(df, pd.DataFrame) else []
+if per_source:
+    st.subheader("Diagnostico de carga (por fonte)")
+    st.dataframe(pd.DataFrame(per_source), use_container_width=True)
+    st.caption("Dica: como agora existe cache (ttl=600s), recarregar a pagina deve voltar mais rapido.")
+
