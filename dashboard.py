@@ -27,6 +27,17 @@ except Exception:
 import numpy as np
 from sklearn.cluster import KMeans
 from wordcloud import WordCloud, STOPWORDS
+
+# --- Stopwords extras para nomes de clusters (remove termos vazios/poluidores) ---
+CLUSTER_STOPWORDS = {
+    "de","da","do","das","dos","com","para","por","em","no","na","nos","nas",
+    "um","uma","uns","umas","e","ou","a","o","as","os",
+    "ao","aos","aquela","aquele","aquelas","aqueles",
+    "pra","pro","porque","que","se","sem","sua","seu","suas","seus",
+    "meu","minha","meus","minhas","tua","teu","tuas","teus",
+    "kit","un","uni","unid","unidade","cm","mm","3d","impresso","impressao","imprimir",
+    "frete","gratis","gratis!","grátis","promo","promocao","promocao","oferta"
+}
 import matplotlib.pyplot as plt
 
 import time
@@ -423,7 +434,7 @@ def market_clusters(d: pd.DataFrame, n_clusters: int = 18):
             mean_vec = X_t[idx].mean(axis=0)
             mean_vec = np.asarray(mean_vec).ravel()
             top_idx = mean_vec.argsort()[-4:][::-1]
-            top_terms = [vocab[i] for i in top_idx if mean_vec[i] > 0]
+            top_terms = [vocab[i] for i in top_idx if mean_vec[i] > 0 and vocab[i] not in CLUSTER_STOPWORDS and len(str(vocab[i])) > 2 and not str(vocab[i]).isdigit()]
             cluster_names[cid] = " / ".join(top_terms) if top_terms else f"Cluster {cid}"
 
         out["CLUSTER_NOME"] = out["CLUSTER_MKT"].map(cluster_names).fillna(out["CLUSTER_MKT"].astype(str))
